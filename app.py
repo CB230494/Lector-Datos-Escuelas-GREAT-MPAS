@@ -184,7 +184,25 @@ def leer_libro(contenido, nombre_archivo):
     return pd.concat(hojas_limpias, ignore_index=True, sort=False)
 
 
+
 def preparar_mep(df):
+    """
+    Lee únicamente las hojas regionales de la base MEP.
+
+    Reglas:
+    - Excluye la hoja Preescolar.
+    - Excluye las filas finales de totales.
+    - Conserva centros con o sin código presupuestario para que el total
+      coincida con el total visible de cada hoja regional.
+    - La región se toma de HOJA_ORIGEN.
+    """
+    if "HOJA_ORIGEN" not in df.columns:
+        raise ValueError("La base MEP no conserva el nombre de la hoja de origen.")
+
+    df = df[
+        ~df["HOJA_ORIGEN"].map(normalizar).eq("PREESCOLAR")
+    ].copy()
+
     col_escuela = buscar_columna(df.columns, [
         "Institución", "Nombre del centro educativo", "Escuela"
     ])
@@ -208,6 +226,7 @@ def preparar_mep(df):
         )
 
     salida = pd.DataFrame({
+        "REGION_MEP": df["HOJA_ORIGEN"].astype(str).str.strip(),
         "ESCUELA_MEP": df[col_escuela],
         "PROVINCIA": df[col_provincia],
         "CANTON": df[col_canton],
@@ -215,10 +234,12 @@ def preparar_mep(df):
         "CODIGO_MEP": df[col_codigo] if col_codigo else "",
     })
 
-    salida = salida.dropna(subset=["ESCUELA_MEP"])
+    # Una escuela válida debe tener nombre y ubicación territorial.
+    # Esto elimina automáticamente las filas finales que solo contienen 312, 397, etc.
+    salida = salida.dropna(subset=["ESCUELA_MEP", "PROVINCIA", "CANTON", "DISTRITO"])
     salida["ESCUELA_MEP"] = salida["ESCUELA_MEP"].astype(str).str.strip()
 
-    for col in ["PROVINCIA", "CANTON", "DISTRITO"]:
+    for col in ["REGION_MEP", "PROVINCIA", "CANTON", "DISTRITO"]:
         salida[col] = salida[col].fillna("").astype(str).str.strip()
         salida[col + "_N"] = salida[col].map(normalizar)
 
@@ -226,21 +247,24 @@ def preparar_mep(df):
     salida["CODIGO_N"] = salida["CODIGO_MEP"].map(normalizar_codigo)
 
     salida["CLAVE_NOMBRE"] = (
+        salida["REGION_MEP_N"] + "|" +
         salida["PROVINCIA_N"] + "|" +
         salida["CANTON_N"] + "|" +
         salida["DISTRITO_N"] + "|" +
         salida["ESCUELA_MEP_N"]
     )
 
-    # Si el código está vacío, la identificación se hace por nombre y ubicación.
     salida["ID_ESCUELA"] = np.where(
         salida["CODIGO_N"].ne(""),
         "COD|" + salida["CODIGO_N"],
         "NOM|" + salida["CLAVE_NOMBRE"]
     )
 
-    return salida.drop_duplicates("ID_ESCUELA")
-
+    # No se eliminan centros sin código. Solo se elimina un duplicado exacto
+    # dentro de la misma hoja regional.
+    return salida.drop_duplicates(
+        ["REGION_MEP_N", "PROVINCIA_N", "CANTON_N", "DISTRITO_N", "ESCUELA_MEP_N"]
+    )
 
 def preparar_mpas(df):
     """
@@ -324,9 +348,9 @@ def relacionar_bases(mep, mpas):
         mep[mep["CODIGO_N"].ne("")]
         .sort_values("ID_ESCUELA")
         .drop_duplicates("CODIGO_N")[[
-            "CODIGO_N", "ID_ESCUELA", "ESCUELA_MEP",
+            "CODIGO_N", "ID_ESCUELA", "ESCUELA_MEP", "REGION_MEP",
             "PROVINCIA", "CANTON", "DISTRITO",
-            "PROVINCIA_N", "CANTON_N", "DISTRITO_N"
+            "REGION_MEP_N", "PROVINCIA_N", "CANTON_N", "DISTRITO_N"
         ]]
     )
 
@@ -339,9 +363,9 @@ def relacionar_bases(mep, mpas):
 
     # Respaldo por nombre únicamente para identificar posibles errores de digitación.
     catalogo_nombres = mep[[
-        "ID_ESCUELA", "ESCUELA_MEP", "ESCUELA_MEP_N",
+        "ID_ESCUELA", "ESCUELA_MEP", "ESCUELA_MEP_N", "REGION_MEP",
         "PROVINCIA", "CANTON", "DISTRITO",
-        "PROVINCIA_N", "CANTON_N", "DISTRITO_N", "CODIGO_N"
+        "REGION_MEP_N", "PROVINCIA_N", "CANTON_N", "DISTRITO_N", "CODIGO_N"
     ]].drop_duplicates("ID_ESCUELA")
 
     faltantes = resultado["ID_ESCUELA"].isna()
@@ -361,8 +385,9 @@ def relacionar_bases(mep, mpas):
         ].iloc[0]
 
         for campo in [
-            "ID_ESCUELA", "ESCUELA_MEP", "PROVINCIA", "CANTON", "DISTRITO",
-            "PROVINCIA_N", "CANTON_N", "DISTRITO_N"
+            "ID_ESCUELA", "ESCUELA_MEP", "REGION_MEP",
+            "PROVINCIA", "CANTON", "DISTRITO",
+            "REGION_MEP_N", "PROVINCIA_N", "CANTON_N", "DISTRITO_N"
         ]:
             resultado.at[idx, campo] = candidato[campo]
 
@@ -382,6 +407,11 @@ def relacionar_bases(mep, mpas):
     resultado.loc[exactos, "CODIGO_MEP_CORRECTO"] = resultado.loc[exactos, "CODIGO_N"]
 
     # Si no se pudo identificar en MEP, conserva ubicación MPAS solo para revisión.
+    if "REGION_MEP" not in resultado.columns:
+        resultado["REGION_MEP"] = "Código no localizado en MEP"
+    resultado["REGION_MEP"] = resultado["REGION_MEP"].fillna("Código no localizado en MEP")
+    resultado["REGION_MEP_N"] = resultado["REGION_MEP"].map(normalizar)
+
     resultado["PROVINCIA"] = resultado["PROVINCIA"].fillna(resultado["PROVINCIA_MPAS"])
     resultado["CANTON"] = resultado["CANTON"].fillna(resultado["CANTON_MPAS"])
     resultado["DISTRITO"] = resultado["DISTRITO"].fillna(resultado["DISTRITO_MPAS"])
@@ -399,24 +429,32 @@ def obtener_coordenadas(distrito, canton, provincia):
     return PROVINCE_COORDS.get(provincia, [9.7489, -83.7534])
 
 
+
 def crear_resumen(mep, relacionados):
+    # El universo MEP se cuenta por hoja regional + provincia + cantón + distrito.
+    # Así R2 Alajuela conserva exactamente sus 312 centros.
     total_mep = (
         mep.groupby(
-            ["PROVINCIA_N", "CANTON_N", "DISTRITO_N"],
+            ["REGION_MEP_N", "PROVINCIA_N", "CANTON_N", "DISTRITO_N"],
             as_index=False
         )
         .agg(
+            REGION_MEP=("REGION_MEP", "first"),
             PROVINCIA=("PROVINCIA", "first"),
             CANTON=("CANTON", "first"),
             DISTRITO=("DISTRITO", "first"),
-            ESCUELAS_MEP=("ID_ESCUELA", "nunique"),
+            ESCUELAS_MEP=("ID_ESCUELA", "count"),
         )
     )
 
-    # Se contabiliza cada fila válida de la hoja resumen MPAS, tal como está registrada.
+    # Solo los registros que pudieron ubicarse en MEP se distribuyen territorialmente.
+    ubicados = relacionados[
+        relacionados["REGION_MEP_N"].ne("CODIGO NO LOCALIZADO EN MEP")
+    ].copy()
+
     total_mpas = (
-        relacionados.groupby(
-            ["PROVINCIA_N", "CANTON_N", "DISTRITO_N"],
+        ubicados.groupby(
+            ["REGION_MEP_N", "PROVINCIA_N", "CANTON_N", "DISTRITO_N"],
             as_index=False,
             dropna=False
         )
@@ -429,7 +467,7 @@ def crear_resumen(mep, relacionados):
 
     resumen = total_mep.merge(
         total_mpas,
-        on=["PROVINCIA_N", "CANTON_N", "DISTRITO_N"],
+        on=["REGION_MEP_N", "PROVINCIA_N", "CANTON_N", "DISTRITO_N"],
         how="left"
     )
 
@@ -459,7 +497,6 @@ def crear_resumen(mep, relacionados):
     resumen["LAT"] = [c[0] for c in coords]
     resumen["LON"] = [c[1] for c in coords]
     return resumen
-
 
 def color_cobertura(pct):
     if pct >= 70:
@@ -575,7 +612,7 @@ except Exception as exc:
 # INFORMACIÓN DE LECTURA
 # ============================================================
 with st.sidebar:
-    st.success(f"MEP: {len(mep):,} escuelas leídas")
+    st.success(f"MEP regional: {len(mep):,} centros leídos")
     st.success(f"MPAS: {len(mpas):,} centros registrados")
 
     coincidencias = relacionados["TIPO_COINCIDENCIA"].eq("Código MEP / Código presupuestario").sum()
@@ -584,20 +621,32 @@ with st.sidebar:
     st.metric("Coincidencias encontradas", f"{coincidencias:,}")
     st.metric("Sin coincidencia", f"{sin_coincidencia:,}")
 
+    st.caption(
+        "La hoja Preescolar y las filas finales de totales no se incluyen. "
+        "Los centros MEP se mantienen separados por hoja regional."
+    )
+
 
 # ============================================================
 # FILTROS
 # ============================================================
 st.subheader("Filtros territoriales")
 
-c1, c2, c3 = st.columns(3)
+c0, c1, c2, c3 = st.columns(4)
 
-provincias = ["Todas"] + sorted(
-    resumen["PROVINCIA"].dropna().unique().tolist()
+regiones = ["Todas"] + sorted(
+    resumen["REGION_MEP"].dropna().unique().tolist()
 )
-provincia = c1.selectbox("Provincia", provincias)
+region = c0.selectbox("Región MEP", regiones)
 
 filtrado = resumen.copy()
+if region != "Todas":
+    filtrado = filtrado[filtrado["REGION_MEP"].eq(region)]
+
+provincias = ["Todas"] + sorted(
+    filtrado["PROVINCIA"].dropna().unique().tolist()
+)
+provincia = c1.selectbox("Provincia", provincias)
 
 if provincia != "Todas":
     filtrado = filtrado[filtrado["PROVINCIA"].eq(provincia)]
@@ -636,7 +685,9 @@ m4.metric("Niños abordados", f"{total_ninos:,}")
 m5.metric("Cobertura", f"{cobertura:.1f}%")
 
 
-territorio = "Costa Rica"
+territorio = "todas las regiones MEP"
+if region != "Todas":
+    territorio = region
 if provincia != "Todas":
     territorio = provincia
 if canton != "Todos":
@@ -725,6 +776,7 @@ with tab_mapa:
                 f"""
                 <div style="width:300px;font-family:Arial">
                     <h4 style="margin-bottom:5px">{fila['DISTRITO']}</h4>
+                    <b>Región MEP:</b> {fila['REGION_MEP']}<br>
                     <b>Provincia:</b> {fila['PROVINCIA']}<br>
                     <b>Cantón:</b> {fila['CANTON']}<br><hr>
                     <b>Escuelas MEP:</b> {int(fila['ESCUELAS_MEP'])}<br>
@@ -769,11 +821,12 @@ with tab_mapa:
 with tab_comp:
     nivel = st.radio(
         "Agrupar información por",
-        ["Provincia", "Cantón", "Distrito"],
+        ["Región MEP", "Provincia", "Cantón", "Distrito"],
         horizontal=True
     )
 
     grupos = {
+        "Región MEP": ["REGION_MEP"],
         "Provincia": ["PROVINCIA"],
         "Cantón": ["PROVINCIA", "CANTON"],
         "Distrito": ["PROVINCIA", "CANTON", "DISTRITO"]
@@ -802,6 +855,7 @@ with tab_comp:
     )
 
     mostrar = comparativa.rename(columns={
+        "REGION_MEP": "Región MEP",
         "PROVINCIA": "Provincia",
         "CANTON": "Cantón",
         "DISTRITO": "Distrito",
@@ -841,6 +895,11 @@ with tab_lista:
         relacionados["ID_ESCUELA"].notna()
     ].copy()
 
+    if region != "Todas":
+        abordadas = abordadas[
+            abordadas["REGION_MEP"].eq(region)
+        ]
+
     if provincia != "Todas":
         abordadas = abordadas[
             abordadas["PROVINCIA"].map(normalizar).eq(normalizar(provincia))
@@ -857,7 +916,7 @@ with tab_lista:
         ]
 
     columnas = [
-        "PROVINCIA", "CANTON", "DISTRITO",
+        "REGION_MEP", "PROVINCIA", "CANTON", "DISTRITO",
         "ESCUELA_MEP", "ESCUELA_MPAS",
         "CODIGO_N", "CODIGO_MEP_CORRECTO", "NINOS", "TIPO_COINCIDENCIA"
     ]
@@ -867,6 +926,7 @@ with tab_lista:
     )
 
     lista = lista.rename(columns={
+        "REGION_MEP": "Región MEP",
         "PROVINCIA": "Provincia",
         "CANTON": "Cantón",
         "DISTRITO": "Distrito",
