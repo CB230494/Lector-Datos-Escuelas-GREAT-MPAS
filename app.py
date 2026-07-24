@@ -895,269 +895,195 @@ with st.expander("Control de cifras de las bases"):
 
 
 # ============================================================
-# PESTAÑAS
+# MAPA Y LISTA EN UNA SOLA PANTALLA
 # ============================================================
-tab_mapa, tab_comp, tab_lista, tab_revision = st.tabs([
-    "🗺️ Mapa",
-    "📊 Comparativa territorial",
-    "🏫 Escuelas abordadas",
-    "⚠️ Revisión de coincidencias"
-])
+st.subheader("Mapa de seguimiento")
 
+st.markdown("""
+<div class="leyenda">
+<b>Leyenda:</b>
+🟢 Distrito con actividad MPAS &nbsp;&nbsp;
+🔴 Distrito sin actividad MPAS
+</div>
+""", unsafe_allow_html=True)
 
-with tab_mapa:
-    st.markdown("""
-    <div class="leyenda">
-    <b>Leyenda del mapa blanco:</b>
-    🟢 Distrito con actividad MPAS &nbsp;&nbsp;
-    🔴 Distrito sin actividad MPAS
-    </div>
-    """, unsafe_allow_html=True)
-
-    if filtrado.empty:
-        st.warning("No existen datos para los filtros seleccionados.")
-    else:
-        centro = [
-            float(filtrado["LAT"].mean()),
-            float(filtrado["LON"].mean())
-        ]
-
-        zoom = 8
-        if provincia != "Todas":
-            zoom = 10
-        if canton != "Todos":
-            zoom = 11
-        if distrito != "Todos":
-            zoom = 13
-
-        mapa = folium.Map(
-            location=centro,
-            zoom_start=zoom,
-            tiles="CartoDB positron",
-            control_scale=True,
-            prefer_canvas=True
-        )
-
-        for _, fila in filtrado.iterrows():
-            tiene_actividad = int(fila["ESCUELAS_ABORDADAS"]) > 0
-            color_pin = "green" if tiene_actividad else "red"
-            icono_pin = "ok" if tiene_actividad else "remove"
-            estado = "CON ACTIVIDAD" if tiene_actividad else "SIN ACTIVIDAD"
-
-            popup = folium.Popup(
-                f"""
-                <div style="width:305px;font-family:Arial">
-                    <h4 style="margin-bottom:5px">{fila['DISTRITO']}</h4>
-                    <b>Estado:</b> {estado}<br>
-                    <b>Región MEP:</b> {fila['REGION_MEP']}<br>
-                    <b>Provincia:</b> {fila['PROVINCIA']}<br>
-                    <b>Cantón:</b> {fila['CANTON']}<br><hr>
-                    <b>Escuelas MEP:</b> {int(fila['ESCUELAS_MEP'])}<br>
-                    <b>Centros MPAS ubicados:</b> {int(fila['ESCUELAS_ABORDADAS'])}<br>
-                    <b>Escuelas pendientes:</b> {int(fila['PENDIENTES'])}<br>
-                    <b>Niños abordados:</b> {int(fila['NINOS_ABORDADOS'])}<br>
-                    <b>Cobertura:</b> {float(fila['COBERTURA']):.1f}%
-                </div>
-                """,
-                max_width=350
-            )
-
-            folium.Marker(
-                location=[fila["LAT"], fila["LON"]],
-                icon=folium.Icon(
-                    color=color_pin,
-                    icon=icono_pin,
-                    prefix="glyphicon"
-                ),
-                tooltip=(
-                    f"{fila['DISTRITO']} · {estado}: "
-                    f"{int(fila['ESCUELAS_ABORDADAS'])}/"
-                    f"{int(fila['ESCUELAS_MEP'])} escuelas"
-                ),
-                popup=popup
-            ).add_to(mapa)
-
-        st_folium(
-            mapa,
-            use_container_width=True,
-            height=620,
-            returned_objects=[]
-        )
-
-
-with tab_comp:
-    nivel = st.radio(
-        "Agrupar información por",
-        ["Región MEP", "Provincia", "Cantón", "Distrito"],
-        horizontal=True
-    )
-
-    grupos = {
-        "Región MEP": ["REGION_MEP"],
-        "Provincia": ["PROVINCIA"],
-        "Cantón": ["PROVINCIA", "CANTON"],
-        "Distrito": ["PROVINCIA", "CANTON", "DISTRITO"]
-    }[nivel]
-
-    comparativa = (
-        filtrado.groupby(grupos, as_index=False)
-        .agg(
-            ESCUELAS_MEP=("ESCUELAS_MEP", "sum"),
-            ESCUELAS_ABORDADAS=("ESCUELAS_ABORDADAS", "sum"),
-            PENDIENTES=("PENDIENTES", "sum"),
-            NINOS_ABORDADOS=("NINOS_ABORDADOS", "sum")
-        )
-    )
-
-    comparativa["COBERTURA_PCT"] = np.where(
-        comparativa["ESCUELAS_MEP"] > 0,
-        comparativa["ESCUELAS_ABORDADAS"] /
-        comparativa["ESCUELAS_MEP"] * 100,
-        0
-    ).round(1)
-
-    comparativa = comparativa.sort_values(
-        ["COBERTURA_PCT", "ESCUELAS_MEP"],
-        ascending=[False, False]
-    )
-
-    mostrar = comparativa.rename(columns={
-        "REGION_MEP": "Región MEP",
-        "PROVINCIA": "Provincia",
-        "CANTON": "Cantón",
-        "DISTRITO": "Distrito",
-        "ESCUELAS_MEP": "Escuelas MEP",
-        "ESCUELAS_ABORDADAS": "Escuelas abordadas",
-        "PENDIENTES": "Pendientes",
-        "NINOS_ABORDADOS": "Niños abordados",
-        "COBERTURA_PCT": "Cobertura %"
-    })
-
-    st.dataframe(
-        mostrar,
-        use_container_width=True,
-        hide_index=True
-    )
-
-    grafico = comparativa.copy()
-    grafico["Territorio"] = grafico[grupos].astype(str).agg(" - ".join, axis=1)
-
-    st.bar_chart(
-        grafico.set_index("Territorio")[
-            ["ESCUELAS_MEP", "ESCUELAS_ABORDADAS"]
-        ],
-        use_container_width=True
-    )
-
-    st.download_button(
-        "Descargar comparativa CSV",
-        data=csv_bytes(mostrar),
-        file_name="comparativa_territorial_mpas.csv",
-        mime="text/csv"
-    )
-
-
-with tab_lista:
-    abordadas = relacionados[
-        relacionados["ID_ESCUELA"].notna()
-    ].copy()
-
-    if region != "Todas":
-        abordadas = abordadas[
-            abordadas["REGION_MEP"].eq(region)
-        ]
-
-    if provincia != "Todas":
-        abordadas = abordadas[
-            abordadas["PROVINCIA"].map(normalizar).eq(normalizar(provincia))
-        ]
-
-    if canton != "Todos":
-        abordadas = abordadas[
-            abordadas["CANTON"].map(normalizar).eq(normalizar(canton))
-        ]
-
-    if distrito != "Todos":
-        abordadas = abordadas[
-            abordadas["DISTRITO"].map(normalizar).eq(normalizar(distrito))
-        ]
-
-    columnas = [
-        "REGION_MEP", "PROVINCIA", "CANTON", "DISTRITO",
-        "ESCUELA_MEP", "ESCUELA_MPAS",
-        "CODIGO_N", "CODIGO_MEP_CORRECTO", "NINOS", "TIPO_COINCIDENCIA"
+if filtrado.empty:
+    st.warning("No existen datos para los filtros seleccionados.")
+else:
+    centro = [
+        float(filtrado["LAT"].mean()),
+        float(filtrado["LON"].mean())
     ]
 
-    lista = abordadas[columnas].sort_values(
+    zoom = 8
+    if region != "Todas":
+        zoom = 9
+    if provincia != "Todas":
+        zoom = 10
+    if canton != "Todos":
+        zoom = 11
+    if distrito != "Todos":
+        zoom = 13
+
+    mapa = folium.Map(
+        location=centro,
+        zoom_start=zoom,
+        tiles="CartoDB positron",
+        control_scale=True,
+        prefer_canvas=True
+    )
+
+    for _, fila in filtrado.iterrows():
+        tiene_actividad = int(fila["ESCUELAS_ABORDADAS"]) > 0
+        color_pin = "green" if tiene_actividad else "red"
+        icono_pin = "ok" if tiene_actividad else "remove"
+        estado = "CON ACTIVIDAD" if tiene_actividad else "SIN ACTIVIDAD"
+
+        popup = folium.Popup(
+            f"""
+            <div style="width:305px;font-family:Arial">
+                <h4 style="margin-bottom:5px">{fila['DISTRITO']}</h4>
+                <b>Estado:</b> {estado}<br>
+                <b>Región MEP:</b> {fila['REGION_MEP']}<br>
+                <b>Provincia:</b> {fila['PROVINCIA']}<br>
+                <b>Cantón:</b> {fila['CANTON']}<br><hr>
+                <b>Centros MEP:</b> {int(fila['ESCUELAS_MEP'])}<br>
+                <b>Centros con actividad:</b> {int(fila['ESCUELAS_ABORDADAS'])}<br>
+                <b>Centros pendientes:</b> {int(fila['PENDIENTES'])}<br>
+                <b>Niños abordados:</b> {int(fila['NINOS_ABORDADOS'])}<br>
+                <b>Cobertura:</b> {float(fila['COBERTURA']):.1f}%
+            </div>
+            """,
+            max_width=350
+        )
+
+        folium.Marker(
+            location=[fila["LAT"], fila["LON"]],
+            icon=folium.Icon(
+                color=color_pin,
+                icon=icono_pin,
+                prefix="glyphicon"
+            ),
+            tooltip=(
+                f"{fila['DISTRITO']} · {estado}: "
+                f"{int(fila['ESCUELAS_ABORDADAS'])}/"
+                f"{int(fila['ESCUELAS_MEP'])} centros"
+            ),
+            popup=popup
+        ).add_to(mapa)
+
+    st_folium(
+        mapa,
+        use_container_width=True,
+        height=590,
+        returned_objects=[]
+    )
+
+# ============================================================
+# LISTA DEBAJO DEL MAPA
+# ============================================================
+st.subheader("Centros educativos con actividad")
+
+abordadas = relacionados[
+    relacionados["ID_ESCUELA"].notna()
+].copy()
+
+if region != "Todas":
+    abordadas = abordadas[
+        abordadas["REGION_MEP"].eq(region)
+    ]
+
+if provincia != "Todas":
+    abordadas = abordadas[
+        abordadas["PROVINCIA"].map(normalizar).eq(normalizar(provincia))
+    ]
+
+if canton != "Todos":
+    abordadas = abordadas[
+        abordadas["CANTON"].map(normalizar).eq(normalizar(canton))
+    ]
+
+if distrito != "Todos":
+    abordadas = abordadas[
+        abordadas["DISTRITO"].map(normalizar).eq(normalizar(distrito))
+    ]
+
+if filtro_actividad == "Sin actividad":
+    abordadas = abordadas.iloc[0:0]
+
+columnas = [
+    "REGION_MEP", "PROVINCIA", "CANTON", "DISTRITO",
+    "ESCUELA_MEP", "CODIGO_MEP_CORRECTO", "NINOS"
+]
+
+lista = abordadas.reindex(columns=columnas).copy()
+
+if not lista.empty:
+    lista = lista.sort_values(
         ["PROVINCIA", "CANTON", "DISTRITO", "ESCUELA_MEP"]
     )
 
-    lista = lista.rename(columns={
-        "REGION_MEP": "Región MEP",
-        "PROVINCIA": "Provincia",
-        "CANTON": "Cantón",
-        "DISTRITO": "Distrito",
-        "ESCUELA_MEP": "Escuela según MEP",
-        "ESCUELA_MPAS": "Escuela registrada en MPAS",
-        "CODIGO_N": "Código registrado en MPAS",
-        "CODIGO_MEP_CORRECTO": "Código presupuestario MEP",
-        "NINOS": "Niños abordados",
-        "TIPO_COINCIDENCIA": "Tipo de coincidencia"
-    })
+lista = lista.rename(columns={
+    "REGION_MEP": "Región MEP",
+    "PROVINCIA": "Provincia",
+    "CANTON": "Cantón",
+    "DISTRITO": "Distrito",
+    "ESCUELA_MEP": "Centro educativo",
+    "CODIGO_MEP_CORRECTO": "Código MEP",
+    "NINOS": "Niños abordados"
+})
+
+if lista.empty:
+    if filtro_actividad == "Sin actividad":
+        st.info(
+            "El filtro está mostrando distritos sin actividad; por eso no hay "
+            "centros abordados para listar."
+        )
+    else:
+        st.info("No existen centros con actividad para los filtros seleccionados.")
+else:
+    st.caption(
+        f"Se muestran {len(lista):,} centros con actividad según los filtros aplicados."
+    )
 
     st.dataframe(
         lista,
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
+        height=min(650, 80 + len(lista) * 35)
     )
 
     st.download_button(
-        "Descargar escuelas abordadas CSV",
+        "Descargar lista de centros con actividad",
         data=csv_bytes(lista),
-        file_name="escuelas_abordadas_mpas.csv",
-        mime="text/csv"
+        file_name="centros_con_actividad_mpas.csv",
+        mime="text/csv",
+        use_container_width=False
     )
 
+# La revisión queda disponible sin ocupar espacio principal ni crear pestañas.
+sin_match = relacionados[
+    relacionados["ID_ESCUELA"].isna()
+].copy()
 
-with tab_revision:
-    sin_match = relacionados[
-        relacionados["ID_ESCUELA"].isna()
-    ].copy()
-
-    st.metric(
-        "Registros MPAS sin coincidencia con MEP",
-        f"{len(sin_match):,}"
-    )
-
-    if sin_match.empty:
-        st.success(
-            "Todas las escuelas registradas en MPAS fueron relacionadas "
-            "con la base MEP."
-        )
-    else:
+if not sin_match.empty:
+    with st.expander(
+        f"Registros pendientes de validar ({len(sin_match):,})",
+        expanded=False
+    ):
         st.warning(
-            "Estos registros no se contabilizan como escuelas abordadas "
-            "hasta que el nombre, código o ubicación coincida con la base MEP."
+            "Estos registros no se ubican en el mapa hasta corregir o validar "
+            "su Código MEP."
         )
 
         columnas_revision = [
-            "PROVINCIA", "CANTON", "DISTRITO",
-            "ESCUELA_MPAS", "CODIGO_N", "NINOS", "HOJAS"
+            "ESCUELA_MPAS", "CODIGO_N", "NINOS"
         ]
 
-        # reindex evita que la aplicación se detenga si una columna opcional
-        # no está presente en una futura versión del archivo.
-        revision = sin_match.reindex(columns=columnas_revision).copy()
-        revision["HOJAS"] = revision["HOJAS"].fillna("MPAS")
-
-        revision = revision.rename(columns={
-            "PROVINCIA": "Provincia",
-            "CANTON": "Cantón",
-            "DISTRITO": "Distrito",
-            "ESCUELA_MPAS": "Escuela registrada en MPAS",
-            "CODIGO_N": "Código MEP registrado",
-            "NINOS": "Niños",
-            "HOJAS": "Hoja de origen"
+        revision = sin_match.reindex(columns=columnas_revision).rename(columns={
+            "ESCUELA_MPAS": "Centro registrado en MPAS",
+            "CODIGO_N": "Código registrado",
+            "NINOS": "Niños"
         })
 
         st.dataframe(
@@ -1166,9 +1092,3 @@ with tab_revision:
             hide_index=True
         )
 
-        st.download_button(
-            "Descargar registros sin coincidencia",
-            data=csv_bytes(revision),
-            file_name="registros_mpas_sin_coincidencia.csv",
-            mime="text/csv"
-        )
