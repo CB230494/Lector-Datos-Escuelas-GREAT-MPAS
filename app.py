@@ -667,6 +667,22 @@ distrito = c3.selectbox("Distrito", distritos)
 if distrito != "Todos":
     filtrado = filtrado[filtrado["DISTRITO"].eq(distrito)]
 
+# Filtro específico para identificar dónde hubo o no actividad MPAS.
+filtro_actividad = st.radio(
+    "Estado de actividad en el distrito",
+    ["Todos", "Con actividad", "Sin actividad"],
+    horizontal=True,
+    help=(
+        "Con actividad: el distrito tiene al menos una escuela abordada. "
+        "Sin actividad: no registra escuelas abordadas en la base MPAS."
+    )
+)
+
+if filtro_actividad == "Con actividad":
+    filtrado = filtrado[filtrado["ESCUELAS_ABORDADAS"] > 0]
+elif filtro_actividad == "Sin actividad":
+    filtrado = filtrado[filtrado["ESCUELAS_ABORDADAS"] == 0]
+
 
 # ============================================================
 # MÉTRICAS
@@ -723,11 +739,9 @@ tab_mapa, tab_comp, tab_lista, tab_revision = st.tabs([
 with tab_mapa:
     st.markdown("""
     <div class="leyenda">
-    <b>Leyenda de cobertura:</b>
-    🟢 70% o más &nbsp;&nbsp;
-    🟠 40% a 69.9% &nbsp;&nbsp;
-    🔴 0.1% a 39.9% &nbsp;&nbsp;
-    ⚪ Sin escuelas abordadas
+    <b>Leyenda del mapa:</b>
+    🟢 Distrito con actividad MPAS &nbsp;&nbsp;
+    🔴 Distrito sin actividad MPAS
     </div>
     """, unsafe_allow_html=True)
 
@@ -750,7 +764,7 @@ with tab_mapa:
         mapa = folium.Map(
             location=centro,
             zoom_start=zoom,
-            tiles="OpenStreetMap",
+            tiles="CartoDB Voyager",
             control_scale=True
         )
 
@@ -763,19 +777,23 @@ with tab_mapa:
         ).add_to(mapa)
 
         folium.TileLayer(
-            tiles="CartoDB Voyager",
-            name="Mapa vial a color",
+            tiles="OpenStreetMap",
+            name="OpenStreetMap",
             overlay=False,
             control=True
         ).add_to(mapa)
 
         for _, fila in filtrado.iterrows():
-            color = color_cobertura(float(fila["COBERTURA"]))
+            tiene_actividad = int(fila["ESCUELAS_ABORDADAS"]) > 0
+            color_pin = "green" if tiene_actividad else "red"
+            icono_pin = "ok" if tiene_actividad else "remove"
+            estado = "CON ACTIVIDAD" if tiene_actividad else "SIN ACTIVIDAD"
 
             popup = folium.Popup(
                 f"""
-                <div style="width:300px;font-family:Arial">
+                <div style="width:305px;font-family:Arial">
                     <h4 style="margin-bottom:5px">{fila['DISTRITO']}</h4>
+                    <b>Estado:</b> {estado}<br>
                     <b>Región MEP:</b> {fila['REGION_MEP']}<br>
                     <b>Provincia:</b> {fila['PROVINCIA']}<br>
                     <b>Cantón:</b> {fila['CANTON']}<br><hr>
@@ -786,22 +804,18 @@ with tab_mapa:
                     <b>Cobertura:</b> {float(fila['COBERTURA']):.1f}%
                 </div>
                 """,
-                max_width=340
+                max_width=350
             )
 
-            folium.CircleMarker(
+            folium.Marker(
                 location=[fila["LAT"], fila["LON"]],
-                radius=max(
-                    7,
-                    min(22, 6 + np.sqrt(float(fila["ESCUELAS_MEP"])))
+                icon=folium.Icon(
+                    color=color_pin,
+                    icon=icono_pin,
+                    prefix="glyphicon"
                 ),
-                color="#ffffff",
-                weight=2,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.88,
                 tooltip=(
-                    f"{fila['DISTRITO']}: "
+                    f"{fila['DISTRITO']} · {estado}: "
                     f"{int(fila['ESCUELAS_ABORDADAS'])}/"
                     f"{int(fila['ESCUELAS_MEP'])} escuelas"
                 ),
