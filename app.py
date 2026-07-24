@@ -190,8 +190,8 @@ def preparar_mep(df):
     Lee únicamente las hojas regionales de la base MEP.
 
     Reglas:
-    - Excluye la hoja Preescolar.
-    - Excluye las filas finales de totales.
+    - Incluye las hojas regionales y la hoja Preescolar.
+    - Excluye únicamente las filas finales de totales.
     - Conserva centros con o sin código presupuestario para que el total
       coincida con el total visible de cada hoja regional.
     - La región se toma de HOJA_ORIGEN.
@@ -199,9 +199,7 @@ def preparar_mep(df):
     if "HOJA_ORIGEN" not in df.columns:
         raise ValueError("La base MEP no conserva el nombre de la hoja de origen.")
 
-    df = df[
-        ~df["HOJA_ORIGEN"].map(normalizar).eq("PREESCOLAR")
-    ].copy()
+    df = df.copy()
 
     col_escuela = buscar_columna(df.columns, [
         "Institución", "Nombre del centro educativo", "Escuela"
@@ -622,8 +620,8 @@ with st.sidebar:
     st.metric("Sin coincidencia", f"{sin_coincidencia:,}")
 
     st.caption(
-        "La hoja Preescolar y las filas finales de totales no se incluyen. "
-        "Los centros MEP se mantienen separados por hoja regional."
+        "Se incluyen todas las hojas, incluida Preescolar. "
+        "Solo se excluyen las filas finales que contienen totales y no centros educativos."
     )
 
 
@@ -688,20 +686,37 @@ elif filtro_actividad == "Sin actividad":
 # MÉTRICAS
 # ============================================================
 total_mep = int(filtrado["ESCUELAS_MEP"].sum())
-total_abordadas = int(filtrado["ESCUELAS_ABORDADAS"].sum())
-total_pendientes = int(filtrado["PENDIENTES"].sum())
-total_ninos = int(filtrado["NINOS_ABORDADOS"].sum())
+total_abordadas_ubicadas = int(filtrado["ESCUELAS_ABORDADAS"].sum())
+total_ninos_ubicados = int(filtrado["NINOS_ABORDADOS"].sum())
+
+# Cuando no hay filtros territoriales ni filtro de actividad, se conserva
+# íntegramente el total reportado por MPAS, aunque existan códigos pendientes.
+vista_nacional_completa = (
+    region == "Todas"
+    and provincia == "Todas"
+    and canton == "Todos"
+    and distrito == "Todos"
+    and filtro_actividad == "Todos"
+)
+
+if vista_nacional_completa:
+    total_abordadas = int(len(mpas))
+    total_ninos = int(mpas["NINOS"].sum())
+else:
+    total_abordadas = total_abordadas_ubicadas
+    total_ninos = total_ninos_ubicados
+
+total_pendientes = max(total_mep - total_abordadas, 0)
 cobertura = (total_abordadas / total_mep * 100) if total_mep else 0
 
 m1, m2, m3, m4, m5 = st.columns(5)
-m1.metric("Escuelas MEP", f"{total_mep:,}")
-m2.metric("Escuelas abordadas", f"{total_abordadas:,}")
-m3.metric("Escuelas pendientes", f"{total_pendientes:,}")
-m4.metric("Niños abordados", f"{total_ninos:,}")
+m1.metric("Centros MEP válidos", f"{total_mep:,}")
+m2.metric("Centros abordados MPAS", f"{total_abordadas:,}")
+m3.metric("Centros pendientes", f"{total_pendientes:,}")
+m4.metric("Niños reportados MPAS", f"{total_ninos:,}")
 m5.metric("Cobertura", f"{cobertura:.1f}%")
 
-
-territorio = "todas las regiones MEP"
+territorio = "Costa Rica"
 if region != "Todas":
     territorio = region
 if provincia != "Todas":
@@ -711,18 +726,46 @@ if canton != "Todos":
 if distrito != "Todos":
     territorio = f"{distrito}, {canton}, {provincia}"
 
+pendientes_codigo = int(
+    ~relacionados["TIPO_COINCIDENCIA"].eq(
+        "Código MEP / Código presupuestario"
+    )
+).sum()
+
 st.markdown(
     f"""
     <div class="resumen">
-    Según la base de datos MEP, en <b>{territorio}</b> hay
-    <b>{total_mep:,} escuelas</b>. Según la base MPAS 2026,
-    se abordaron <b>{total_abordadas:,} escuelas</b>, con un total de
-    <b>{total_ninos:,} niños abordados</b>. La cobertura corresponde al
+    Según la base MEP, en <b>{territorio}</b> existen
+    <b>{total_mep:,} centros educativos válidos</b>. La base MPAS reporta
+    <b>{total_abordadas:,} centros abordados</b> y
+    <b>{total_ninos:,} niños</b>. La cobertura corresponde al
     <b>{cobertura:.1f}%</b>.
     </div>
     """,
     unsafe_allow_html=True
 )
+
+if vista_nacional_completa and pendientes_codigo > 0:
+    st.info(
+        f"MPAS contiene {len(mpas):,} registros. "
+        f"{total_abordadas_ubicadas:,} ya están ubicados territorialmente mediante "
+        f"el Código MEP y {pendientes_codigo:,} están pendientes de corregir o validar. "
+        "Los pendientes sí se mantienen incluidos en el total nacional."
+    )
+
+with st.expander("Control de cifras de las bases"):
+    st.write(
+        f"**Base MEP:** {len(mep):,} filas válidas de centros educativos. "
+        "Las filas finales que solo muestran el total de cada hoja no se cuentan como escuelas."
+    )
+    st.write(
+        f"**Base MPAS:** {len(mpas):,} centros reportados y "
+        f"{int(mpas['NINOS'].sum()):,} niños reportados."
+    )
+    st.write(
+        f"**Georreferenciados por Código MEP:** {total_abordadas_ubicadas:,} centros "
+        f"y {total_ninos_ubicados:,} niños para la vista territorial actual."
+    )
 
 
 # ============================================================
@@ -739,7 +782,7 @@ tab_mapa, tab_comp, tab_lista, tab_revision = st.tabs([
 with tab_mapa:
     st.markdown("""
     <div class="leyenda">
-    <b>Leyenda del mapa:</b>
+    <b>Leyenda del mapa blanco:</b>
     🟢 Distrito con actividad MPAS &nbsp;&nbsp;
     🔴 Distrito sin actividad MPAS
     </div>
@@ -764,24 +807,10 @@ with tab_mapa:
         mapa = folium.Map(
             location=centro,
             zoom_start=zoom,
-            tiles="CartoDB Voyager",
-            control_scale=True
+            tiles="CartoDB positron",
+            control_scale=True,
+            prefer_canvas=True
         )
-
-        folium.TileLayer(
-            tiles="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-            attr="OpenTopoMap",
-            name="Mapa topográfico a color",
-            overlay=False,
-            control=True
-        ).add_to(mapa)
-
-        folium.TileLayer(
-            tiles="OpenStreetMap",
-            name="OpenStreetMap",
-            overlay=False,
-            control=True
-        ).add_to(mapa)
 
         for _, fila in filtrado.iterrows():
             tiene_actividad = int(fila["ESCUELAS_ABORDADAS"]) > 0
@@ -798,7 +827,7 @@ with tab_mapa:
                     <b>Provincia:</b> {fila['PROVINCIA']}<br>
                     <b>Cantón:</b> {fila['CANTON']}<br><hr>
                     <b>Escuelas MEP:</b> {int(fila['ESCUELAS_MEP'])}<br>
-                    <b>Escuelas abordadas:</b> {int(fila['ESCUELAS_ABORDADAS'])}<br>
+                    <b>Centros MPAS ubicados:</b> {int(fila['ESCUELAS_ABORDADAS'])}<br>
                     <b>Escuelas pendientes:</b> {int(fila['PENDIENTES'])}<br>
                     <b>Niños abordados:</b> {int(fila['NINOS_ABORDADOS'])}<br>
                     <b>Cobertura:</b> {float(fila['COBERTURA']):.1f}%
@@ -821,8 +850,6 @@ with tab_mapa:
                 ),
                 popup=popup
             ).add_to(mapa)
-
-        folium.LayerControl(position="topright").add_to(mapa)
 
         st_folium(
             mapa,
