@@ -979,31 +979,52 @@ else:
                 popup=popup
             ).add_to(mapa)
 
-    # Pines verdes: uno por cada fila de centro educativo mostrada en la lista.
-    # Cuando varios centros comparten distrito, se separan ligeramente en círculo
-    # para que ninguno quede oculto debajo de otro.
+    # Pines verdes: exactamente uno por cada Código MEP único.
+    # La separación se calcula por coordenada base compartida, no solo por distrito,
+    # porque distintos distritos pueden heredar la misma coordenada del cantón.
     if filtro_actividad in ["Todos", "Con actividad"] and not centros_mapa.empty:
         centros_mapa = centros_mapa.copy()
-        centros_mapa["CLAVE_UBICACION"] = (
-            centros_mapa["PROVINCIA"].map(normalizar) + "|" +
-            centros_mapa["CANTON"].map(normalizar) + "|" +
-            centros_mapa["DISTRITO"].map(normalizar)
+
+        # Un centro oficial = un Código MEP único.
+        centros_mapa["CODIGO_PIN"] = centros_mapa["CODIGO_MEP_CORRECTO"].map(normalizar_codigo)
+        centros_mapa = centros_mapa[
+            centros_mapa["CODIGO_PIN"].ne("")
+        ].drop_duplicates("CODIGO_PIN").reset_index(drop=True)
+
+        # Determina la coordenada de referencia de cada centro.
+        coordenadas_base = []
+        for _, fila in centros_mapa.iterrows():
+            lat_base, lon_base = obtener_coordenadas(
+                normalizar(fila["DISTRITO"]),
+                normalizar(fila["CANTON"]),
+                normalizar(fila["PROVINCIA"]),
+            )
+            coordenadas_base.append((float(lat_base), float(lon_base)))
+
+        centros_mapa["LAT_BASE"] = [c[0] for c in coordenadas_base]
+        centros_mapa["LON_BASE"] = [c[1] for c in coordenadas_base]
+        centros_mapa["CLAVE_COORD"] = centros_mapa.apply(
+            lambda r: f"{r['LAT_BASE']:.6f}|{r['LON_BASE']:.6f}", axis=1
         )
 
-        for _, grupo in centros_mapa.groupby("CLAVE_UBICACION", dropna=False):
+        numero_global = 1
+
+        for _, grupo in centros_mapa.groupby("CLAVE_COORD", sort=False, dropna=False):
             grupo = grupo.reset_index(drop=True)
             total_grupo = len(grupo)
-            distrito_n = normalizar(grupo.at[0, "DISTRITO"])
-            canton_n = normalizar(grupo.at[0, "CANTON"])
-            provincia_n = normalizar(grupo.at[0, "PROVINCIA"])
-            lat_base, lon_base = obtener_coordenadas(distrito_n, canton_n, provincia_n)
+            lat_base = float(grupo.at[0, "LAT_BASE"])
+            lon_base = float(grupo.at[0, "LON_BASE"])
 
             for posicion, fila in grupo.iterrows():
                 if total_grupo == 1:
                     lat, lon = lat_base, lon_base
                 else:
-                    angulo = (2 * math.pi * posicion) / total_grupo
-                    radio = 0.008 + min(total_grupo, 8) * 0.0005
+                    # Distribución en varios anillos para evitar cualquier superposición.
+                    anillo = posicion // 8
+                    posicion_anillo = posicion % 8
+                    elementos_anillo = min(8, total_grupo - anillo * 8)
+                    angulo = (2 * math.pi * posicion_anillo) / max(elementos_anillo, 1)
+                    radio = 0.010 + anillo * 0.008
                     lat = lat_base + radio * math.cos(angulo)
                     lon = lon_base + radio * math.sin(angulo)
 
@@ -1013,7 +1034,7 @@ else:
                 popup = folium.Popup(
                     f"""
                     <div style="width:320px;font-family:Arial">
-                        <h4 style="margin-bottom:5px">{fila['ESCUELA_MEP']}</h4>
+                        <h4 style="margin-bottom:5px">{numero_global}. {fila['ESCUELA_MEP']}</h4>
                         <b>Estado:</b> CON ACTIVIDAD<br>
                         <b>Código MEP:</b> {codigo}<br>
                         <b>Región MEP:</b> {fila['REGION_MEP']}<br>
@@ -1023,15 +1044,46 @@ else:
                         <b>Niños abordados:</b> {ninos}
                     </div>
                     """,
-                    max_width=360
+                    max_width=360,
                 )
+
+                # Pin verde numerado para verificar visualmente los 34 centros.
+                icon_html = f"""
+                <div style="position:relative;width:34px;height:46px;">
+                    <div style="
+                        width:30px;height:30px;background:#65a30d;
+                        border:2px solid white;border-radius:50% 50% 50% 0;
+                        transform:rotate(-45deg);
+                        box-shadow:0 2px 5px rgba(0,0,0,.35);
+                        position:absolute;left:1px;top:1px;
+                    "></div>
+                    <div style="
+                        position:absolute;left:0;top:7px;width:34px;
+                        text-align:center;color:white;font-weight:800;
+                        font-size:12px;line-height:18px;
+                    ">{numero_global}</div>
+                </div>
+                """
 
                 folium.Marker(
                     location=[lat, lon],
-                    icon=folium.Icon(color="green", icon="ok", prefix="glyphicon"),
-                    tooltip=f"{fila['ESCUELA_MEP']} · {fila['DISTRITO']}",
-                    popup=popup
+                    icon=folium.DivIcon(
+                        html=icon_html,
+                        icon_size=(34, 46),
+                        icon_anchor=(17, 43),
+                        class_name="",
+                    ),
+                    tooltip=f"{numero_global}. {fila['ESCUELA_MEP']} · {fila['DISTRITO']}",
+                    popup=popup,
+                    z_index_offset=1000 + numero_global,
                 ).add_to(mapa)
+
+                numero_global += 1
+
+        st.caption(
+            f"El mapa muestra {len(centros_mapa):,} pines verdes numerados, "
+            "uno por cada Código MEP único con actividad."
+        )
 
     st_folium(
         mapa,
