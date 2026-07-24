@@ -287,6 +287,7 @@ def preparar_mpas(df):
         "DISTRITO_MPAS": principal[col_distrito] if col_distrito else "",
         "CODIGO_MEP_ORIGINAL": principal[col_codigo],
         "NINOS": principal[col_ninos],
+        "HOJAS": principal["HOJA_ORIGEN"] if "HOJA_ORIGEN" in principal.columns else "MPAS",
     })
 
     salida = salida.dropna(subset=["ESCUELA_MPAS"])
@@ -912,17 +913,24 @@ with tab_revision:
             "hasta que el nombre, código o ubicación coincida con la base MEP."
         )
 
-        revision = sin_match[[
+        columnas_revision = [
             "PROVINCIA", "CANTON", "DISTRITO",
             "ESCUELA_MPAS", "CODIGO_N", "NINOS", "HOJAS"
-        ]].rename(columns={
+        ]
+
+        # reindex evita que la aplicación se detenga si una columna opcional
+        # no está presente en una futura versión del archivo.
+        revision = sin_match.reindex(columns=columnas_revision).copy()
+        revision["HOJAS"] = revision["HOJAS"].fillna("MPAS")
+
+        revision = revision.rename(columns={
             "PROVINCIA": "Provincia",
             "CANTON": "Cantón",
             "DISTRITO": "Distrito",
             "ESCUELA_MPAS": "Escuela registrada en MPAS",
             "CODIGO_N": "Código MEP registrado",
             "NINOS": "Niños",
-            "HOJAS": "Hojas de origen"
+            "HOJAS": "Hoja de origen"
         })
 
         st.dataframe(
