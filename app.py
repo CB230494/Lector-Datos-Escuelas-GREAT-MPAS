@@ -185,6 +185,105 @@ def leer_libro(contenido, nombre_archivo):
 
 
 
+@st.cache_data(show_spinner=False)
+def leer_totales_oficiales_mpas(contenido, nombre_archivo):
+    """
+    Lee el bloque verde de totales oficiales del archivo MPAS.
+
+    El libro puede contener otras tablas con ceros y etiquetas parecidas.
+    Por eso se recopilan todos los candidatos encontrados y se conserva
+    el mayor valor válido de cada indicador oficial.
+    """
+    extension = Path(nombre_archivo).suffix.lower()
+    engine = "xlrd" if extension == ".xls" else "openpyxl"
+    libro = pd.ExcelFile(io.BytesIO(contenido), engine=engine)
+
+    etiquetas = {
+        "TOTAL ESCUELAS": "escuelas",
+        "TOTAL PRIMARIA": "primaria",
+        "TOTAL INTERMEDIA": "intermedia",
+        "TOTAL NINOS": "ninos",
+    }
+
+    candidatos = {
+        "escuelas": [],
+        "primaria": [],
+        "intermedia": [],
+        "ninos": [],
+    }
+
+    for hoja in libro.sheet_names:
+        bruto = pd.read_excel(
+            io.BytesIO(contenido),
+            sheet_name=hoja,
+            header=None,
+            engine=engine,
+        )
+
+        if bruto.empty:
+            continue
+
+        for fila_idx in range(len(bruto)):
+            for col_idx in range(len(bruto.columns)):
+                etiqueta = normalizar(bruto.iat[fila_idx, col_idx])
+
+                if etiqueta not in etiquetas:
+                    continue
+
+                clave = etiquetas[etiqueta]
+
+                # Busca el primer valor numérico situado a la derecha.
+                for desplazamiento in range(1, 9):
+                    posicion = col_idx + desplazamiento
+
+                    if posicion >= len(bruto.columns):
+                        break
+
+                    valor = pd.to_numeric(
+                        bruto.iat[fila_idx, posicion],
+                        errors="coerce"
+                    )
+
+                    if pd.notna(valor):
+                        numero = int(round(float(valor)))
+
+                        if numero >= 0:
+                            candidatos[clave].append(numero)
+                        break
+
+    faltantes = [
+        clave for clave, valores in candidatos.items()
+        if not valores
+    ]
+
+    if faltantes:
+        raise ValueError(
+            "No se pudo localizar el bloque verde de totales MPAS: "
+            + ", ".join(faltantes)
+        )
+
+    totales = {
+        clave: max(valores)
+        for clave, valores in candidatos.items()
+    }
+
+    # Validaciones de coherencia del bloque oficial.
+    if totales["primaria"] + totales["intermedia"] != totales["ninos"]:
+        raise ValueError(
+            "Los totales oficiales MPAS no son coherentes: "
+            f"primaria ({totales['primaria']}) + "
+            f"intermedia ({totales['intermedia']}) no corresponde a "
+            f"total niños ({totales['ninos']})."
+        )
+
+    if totales["escuelas"] <= 0 or totales["ninos"] <= 0:
+        raise ValueError(
+            "El bloque oficial MPAS fue encontrado, pero contiene totales en cero."
+        )
+
+    return totales
+
+
 def preparar_mep(df):
     """
     Lee únicamente las hojas regionales de la base MEP.
@@ -595,6 +694,9 @@ try:
     with st.spinner("Leyendo y relacionando las bases..."):
         mep_raw = leer_libro(archivo_mep.getvalue(), archivo_mep.name)
         mpas_raw = leer_libro(archivo_mpas.getvalue(), archivo_mpas.name)
+        totales_oficiales_mpas = leer_totales_oficiales_mpas(
+            archivo_mpas.getvalue(), archivo_mpas.name
+        )
 
         mep = preparar_mep(mep_raw)
         mpas = preparar_mpas(mpas_raw)
@@ -618,6 +720,13 @@ with st.sidebar:
 
     st.metric("Coincidencias encontradas", f"{coincidencias:,}")
     st.metric("Sin coincidencia", f"{sin_coincidencia:,}")
+    st.success(
+        "Bloque oficial MPAS leído correctamente: "
+        f"{totales_oficiales_mpas['escuelas']:,} centros · "
+        f"{totales_oficiales_mpas['primaria']:,} primaria · "
+        f"{totales_oficiales_mpas['intermedia']:,} intermedia · "
+        f"{totales_oficiales_mpas['ninos']:,} niños"
+    )
 
     st.caption(
         "Se incluyen todas las hojas, incluida Preescolar. "
@@ -700,21 +809,36 @@ vista_nacional_completa = (
 )
 
 if vista_nacional_completa:
-    total_abordadas = int(len(mpas))
-    total_ninos = int(mpas["NINOS"].sum())
+    # Los indicadores nacionales salen directamente del bloque verde oficial MPAS.
+    total_abordadas = int(totales_oficiales_mpas["escuelas"])
+    total_primaria = int(totales_oficiales_mpas["primaria"])
+    total_intermedia = int(totales_oficiales_mpas["intermedia"])
+    total_ninos = int(totales_oficiales_mpas["ninos"])
 else:
+    # Los filtros territoriales usan únicamente el detalle que pudo ubicarse.
     total_abordadas = total_abordadas_ubicadas
+    total_primaria = None
+    total_intermedia = None
     total_ninos = total_ninos_ubicados
 
 total_pendientes = max(total_mep - total_abordadas, 0)
 cobertura = (total_abordadas / total_mep * 100) if total_mep else 0
 
-m1, m2, m3, m4, m5 = st.columns(5)
-m1.metric("Centros MEP válidos", f"{total_mep:,}")
-m2.metric("Centros abordados MPAS", f"{total_abordadas:,}")
-m3.metric("Centros pendientes", f"{total_pendientes:,}")
-m4.metric("Niños reportados MPAS", f"{total_ninos:,}")
-m5.metric("Cobertura", f"{cobertura:.1f}%")
+if vista_nacional_completa:
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Centros MEP válidos", f"{total_mep:,}")
+    m2.metric("Centros abordados MPAS", f"{total_abordadas:,}")
+    m3.metric("Primaria", f"{total_primaria:,}")
+    m4.metric("Intermedia", f"{total_intermedia:,}")
+    m5.metric("Total niños", f"{total_ninos:,}")
+    m6.metric("Cobertura", f"{cobertura:.1f}%")
+else:
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Centros MEP válidos", f"{total_mep:,}")
+    m2.metric("Centros MPAS ubicados", f"{total_abordadas:,}")
+    m3.metric("Centros pendientes", f"{total_pendientes:,}")
+    m4.metric("Niños ubicados", f"{total_ninos:,}")
+    m5.metric("Cobertura", f"{cobertura:.1f}%")
 
 territorio = "Costa Rica"
 if region != "Todas":
@@ -727,10 +851,10 @@ if distrito != "Todos":
     territorio = f"{distrito}, {canton}, {provincia}"
 
 pendientes_codigo = int(
-    ~relacionados["TIPO_COINCIDENCIA"].eq(
+    (~relacionados["TIPO_COINCIDENCIA"].fillna("").eq(
         "Código MEP / Código presupuestario"
-    )
-).sum()
+    )).sum()
+)
 
 st.markdown(
     f"""
@@ -747,7 +871,7 @@ st.markdown(
 
 if vista_nacional_completa and pendientes_codigo > 0:
     st.info(
-        f"MPAS contiene {len(mpas):,} registros. "
+        f"El bloque oficial MPAS reporta {totales_oficiales_mpas['escuelas']:,} centros. "
         f"{total_abordadas_ubicadas:,} ya están ubicados territorialmente mediante "
         f"el Código MEP y {pendientes_codigo:,} están pendientes de corregir o validar. "
         "Los pendientes sí se mantienen incluidos en el total nacional."
@@ -759,8 +883,10 @@ with st.expander("Control de cifras de las bases"):
         "Las filas finales que solo muestran el total de cada hoja no se cuentan como escuelas."
     )
     st.write(
-        f"**Base MPAS:** {len(mpas):,} centros reportados y "
-        f"{int(mpas['NINOS'].sum()):,} niños reportados."
+        f"**Totales oficiales MPAS:** {totales_oficiales_mpas['escuelas']:,} centros, "
+        f"{totales_oficiales_mpas['primaria']:,} primaria, "
+        f"{totales_oficiales_mpas['intermedia']:,} intermedia y "
+        f"{totales_oficiales_mpas['ninos']:,} niños."
     )
     st.write(
         f"**Georreferenciados por Código MEP:** {total_abordadas_ubicadas:,} centros "
