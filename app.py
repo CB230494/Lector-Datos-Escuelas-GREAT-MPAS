@@ -727,10 +727,10 @@ if distrito != "Todos":
     territorio = f"{distrito}, {canton}, {provincia}"
 
 pendientes_codigo = int(
-    ~relacionados["TIPO_COINCIDENCIA"].eq(
+    (~relacionados["TIPO_COINCIDENCIA"].fillna("").eq(
         "Código MEP / Código presupuestario"
-    )
-).sum()
+    )).sum()
+)
 
 st.markdown(
     f"""
