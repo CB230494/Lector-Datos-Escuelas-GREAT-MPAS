@@ -243,153 +243,150 @@ def preparar_mep(df):
 
 
 def preparar_mpas(df):
-    col_escuela = buscar_columna(df.columns, [
+    """
+    Utiliza únicamente la hoja resumen principal "MPAS".
+    Cada fila válida representa un centro educativo abordado según la base MPAS.
+    El Código MEP es la llave principal de comparación.
+    """
+    if "HOJA_ORIGEN" in df.columns:
+        mascara_hoja = df["HOJA_ORIGEN"].map(normalizar).eq("MPAS")
+        principal = df[mascara_hoja].copy()
+        if principal.empty:
+            principal = df.copy()
+    else:
+        principal = df.copy()
+
+    col_escuela = buscar_columna(principal.columns, [
         "Nombre del centro educativo", "Institución", "Escuela"
     ])
-    col_provincia = buscar_columna(df.columns, ["Provincia"])
-    col_canton = buscar_columna(df.columns, ["Cantón", "Canton"])
-    col_distrito = buscar_columna(df.columns, ["Distrito"])
-    col_codigo = buscar_columna(df.columns, ["Código MEP", "Codigo MEP"])
-    col_ninos = buscar_columna(df.columns, [
+    col_provincia = buscar_columna(principal.columns, ["Provincia"])
+    col_canton = buscar_columna(principal.columns, ["Cantón", "Canton"])
+    col_distrito = buscar_columna(principal.columns, ["Distrito"])
+    col_codigo = buscar_columna(principal.columns, ["Código MEP", "Codigo MEP"])
+    col_ninos = buscar_columna(principal.columns, [
         "Total niños capacitados", "Total ninos capacitados",
-        "Cantidad de niños", "Cantidad ninos",
-        "Niños", "Ninos", "Estudiantes", "Participantes"
+        "Cantidad de niños", "Cantidad ninos", "Niños", "Ninos"
     ])
 
     requeridas = {
         "nombre del centro educativo": col_escuela,
-        "provincia": col_provincia,
-        "cantón": col_canton,
-        "distrito": col_distrito,
+        "código MEP": col_codigo,
+        "total de niños capacitados": col_ninos,
     }
     faltantes = [k for k, v in requeridas.items() if v is None]
     if faltantes:
         raise ValueError(
-            "No se encontraron en la base MPAS las columnas: " + ", ".join(faltantes)
+            "No se encontraron en la hoja resumen MPAS las columnas: "
+            + ", ".join(faltantes)
         )
 
     salida = pd.DataFrame({
-        "ESCUELA_MPAS": df[col_escuela],
-        "PROVINCIA": df[col_provincia],
-        "CANTON": df[col_canton],
-        "DISTRITO": df[col_distrito],
-        "CODIGO_MEP": df[col_codigo] if col_codigo else "",
-        "NINOS": df[col_ninos] if col_ninos else 0,
-        "HOJA_ORIGEN": df.get("HOJA_ORIGEN", ""),
+        "ESCUELA_MPAS": principal[col_escuela],
+        "PROVINCIA_MPAS": principal[col_provincia] if col_provincia else "",
+        "CANTON_MPAS": principal[col_canton] if col_canton else "",
+        "DISTRITO_MPAS": principal[col_distrito] if col_distrito else "",
+        "CODIGO_MEP_ORIGINAL": principal[col_codigo],
+        "NINOS": principal[col_ninos],
     })
 
     salida = salida.dropna(subset=["ESCUELA_MPAS"])
     salida["ESCUELA_MPAS"] = salida["ESCUELA_MPAS"].astype(str).str.strip()
 
-    for col in ["PROVINCIA", "CANTON", "DISTRITO"]:
-        salida[col] = salida[col].fillna("").astype(str).str.strip()
-        salida[col + "_N"] = salida[col].map(normalizar)
+    # Excluye filas de totales y filas vacías; conserva cada registro real MPAS.
+    salida = salida[
+        ~salida["ESCUELA_MPAS"].map(normalizar).str.contains("TOTAL NINOS", na=False)
+    ]
+    salida = salida[salida["ESCUELA_MPAS"].ne("")]
 
+    salida["CODIGO_N"] = salida["CODIGO_MEP_ORIGINAL"].map(normalizar_codigo)
     salida["ESCUELA_MPAS_N"] = salida["ESCUELA_MPAS"].map(normalizar)
-    salida["CODIGO_N"] = salida["CODIGO_MEP"].map(normalizar_codigo)
     salida["NINOS"] = pd.to_numeric(salida["NINOS"], errors="coerce").fillna(0)
 
-    salida["CLAVE_NOMBRE"] = (
-        salida["PROVINCIA_N"] + "|" +
-        salida["CANTON_N"] + "|" +
-        salida["DISTRITO_N"] + "|" +
-        salida["ESCUELA_MPAS_N"]
-    )
+    for col in ["PROVINCIA_MPAS", "CANTON_MPAS", "DISTRITO_MPAS"]:
+        salida[col] = salida[col].fillna("").astype(str).str.strip()
 
-    # Evita duplicar niños cuando una misma escuela aparece en hojas de seguimiento.
-    # Se toma el máximo total de niños informado para esa escuela.
-    agrupado = (
-        salida.groupby(
-            [
-                "CODIGO_N", "CLAVE_NOMBRE", "ESCUELA_MPAS",
-                "PROVINCIA", "CANTON", "DISTRITO",
-                "PROVINCIA_N", "CANTON_N", "DISTRITO_N",
-                "ESCUELA_MPAS_N"
-            ],
-            as_index=False,
-            dropna=False
-        )
-        .agg(
-            NINOS=("NINOS", "max"),
-            HOJAS=("HOJA_ORIGEN", lambda s: ", ".join(sorted(set(map(str, s)))))
-        )
-    )
-
-    return agrupado
+    salida = salida.reset_index(drop=True)
+    salida["REGISTRO_MPAS_ID"] = np.arange(1, len(salida) + 1)
+    return salida
 
 
 def relacionar_bases(mep, mpas):
     """
-    Orden de relación:
-    1. Código MEP.
-    2. Nombre exacto + ubicación.
-    3. Nombre aproximado dentro del mismo distrito.
+    Relación segura:
+    1. Código MEP de MPAS = Código presupuestario de MEP.
+    2. Solo cuando el código está vacío o mal digitado, se intenta recuperar
+       la institución por nombre para fines de revisión.
+
+    El conteo MPAS conserva todos los registros válidos de la hoja resumen.
     """
-    mep_codigo = (
+    catalogo_codigo = (
         mep[mep["CODIGO_N"].ne("")]
-        .drop_duplicates("CODIGO_N")
-        [["CODIGO_N", "ID_ESCUELA", "ESCUELA_MEP"]]
+        .sort_values("ID_ESCUELA")
+        .drop_duplicates("CODIGO_N")[[
+            "CODIGO_N", "ID_ESCUELA", "ESCUELA_MEP",
+            "PROVINCIA", "CANTON", "DISTRITO",
+            "PROVINCIA_N", "CANTON_N", "DISTRITO_N"
+        ]]
     )
 
-    resultado = mpas.merge(mep_codigo, on="CODIGO_N", how="left")
+    resultado = mpas.merge(catalogo_codigo, on="CODIGO_N", how="left")
     resultado["TIPO_COINCIDENCIA"] = np.where(
         resultado["ID_ESCUELA"].notna(),
-        "Código MEP",
-        "Sin coincidencia"
+        "Código MEP / Código presupuestario",
+        "Código no encontrado"
     )
 
-    # Coincidencia exacta por nombre y ubicación
-    mapa_nombre = (
-        mep.drop_duplicates("CLAVE_NOMBRE")
-        .set_index("CLAVE_NOMBRE")[["ID_ESCUELA", "ESCUELA_MEP"]]
-    )
+    # Respaldo por nombre únicamente para identificar posibles errores de digitación.
+    catalogo_nombres = mep[[
+        "ID_ESCUELA", "ESCUELA_MEP", "ESCUELA_MEP_N",
+        "PROVINCIA", "CANTON", "DISTRITO",
+        "PROVINCIA_N", "CANTON_N", "DISTRITO_N", "CODIGO_N"
+    ]].drop_duplicates("ID_ESCUELA")
 
-    faltan = resultado["ID_ESCUELA"].isna()
-    for idx in resultado[faltan].index:
-        clave = resultado.at[idx, "CLAVE_NOMBRE"]
-        if clave in mapa_nombre.index:
-            resultado.at[idx, "ID_ESCUELA"] = mapa_nombre.at[clave, "ID_ESCUELA"]
-            resultado.at[idx, "ESCUELA_MEP"] = mapa_nombre.at[clave, "ESCUELA_MEP"]
-            resultado.at[idx, "TIPO_COINCIDENCIA"] = "Nombre exacto"
+    faltantes = resultado["ID_ESCUELA"].isna()
+    opciones = catalogo_nombres["ESCUELA_MEP_N"].tolist()
 
-    # Coincidencia aproximada por distrito
-    catalogos = {}
-    for ubicacion, grupo in mep.groupby(
-        ["PROVINCIA_N", "CANTON_N", "DISTRITO_N"]
-    ):
-        catalogos[ubicacion] = grupo[
-            ["ESCUELA_MEP_N", "ESCUELA_MEP", "ID_ESCUELA"]
-        ].drop_duplicates()
-
-    faltan = resultado["ID_ESCUELA"].isna()
-    for idx, fila in resultado[faltan].iterrows():
-        ubicacion = (
-            fila["PROVINCIA_N"],
-            fila["CANTON_N"],
-            fila["DISTRITO_N"]
-        )
-        catalogo = catalogos.get(ubicacion)
-
-        if catalogo is None or catalogo.empty:
+    for idx, fila in resultado[faltantes].iterrows():
+        nombre = fila["ESCUELA_MPAS_N"]
+        if not nombre:
             continue
 
-        opciones = catalogo["ESCUELA_MEP_N"].tolist()
-        match = process.extractOne(
-            fila["ESCUELA_MPAS_N"],
-            opciones,
-            scorer=fuzz.token_sort_ratio
+        match = process.extractOne(nombre, opciones, scorer=fuzz.token_sort_ratio)
+        if not match or match[1] < 88:
+            continue
+
+        candidato = catalogo_nombres[
+            catalogo_nombres["ESCUELA_MEP_N"].eq(match[0])
+        ].iloc[0]
+
+        for campo in [
+            "ID_ESCUELA", "ESCUELA_MEP", "PROVINCIA", "CANTON", "DISTRITO",
+            "PROVINCIA_N", "CANTON_N", "DISTRITO_N"
+        ]:
+            resultado.at[idx, campo] = candidato[campo]
+
+        resultado.at[idx, "CODIGO_MEP_CORRECTO"] = candidato["CODIGO_N"]
+        resultado.at[idx, "TIPO_COINCIDENCIA"] = (
+            f"Revisión por nombre ({match[1]:.0f}%)"
         )
 
-        if match and match[1] >= 86:
-            registro = catalogo[
-                catalogo["ESCUELA_MEP_N"].eq(match[0])
-            ].iloc[0]
+    if "CODIGO_MEP_CORRECTO" not in resultado.columns:
+        resultado["CODIGO_MEP_CORRECTO"] = ""
+    resultado["CODIGO_MEP_CORRECTO"] = resultado["CODIGO_MEP_CORRECTO"].fillna("")
 
-            resultado.at[idx, "ID_ESCUELA"] = registro["ID_ESCUELA"]
-            resultado.at[idx, "ESCUELA_MEP"] = registro["ESCUELA_MEP"]
-            resultado.at[idx, "TIPO_COINCIDENCIA"] = (
-                f"Nombre aproximado ({match[1]:.0f}%)"
-            )
+    # Para códigos exactos, el código correcto es el mismo ingresado.
+    exactos = resultado["TIPO_COINCIDENCIA"].eq(
+        "Código MEP / Código presupuestario"
+    )
+    resultado.loc[exactos, "CODIGO_MEP_CORRECTO"] = resultado.loc[exactos, "CODIGO_N"]
+
+    # Si no se pudo identificar en MEP, conserva ubicación MPAS solo para revisión.
+    resultado["PROVINCIA"] = resultado["PROVINCIA"].fillna(resultado["PROVINCIA_MPAS"])
+    resultado["CANTON"] = resultado["CANTON"].fillna(resultado["CANTON_MPAS"])
+    resultado["DISTRITO"] = resultado["DISTRITO"].fillna(resultado["DISTRITO_MPAS"])
+    resultado["PROVINCIA_N"] = resultado["PROVINCIA"].map(normalizar)
+    resultado["CANTON_N"] = resultado["CANTON"].map(normalizar)
+    resultado["DISTRITO_N"] = resultado["DISTRITO"].map(normalizar)
 
     return resultado
 
@@ -415,15 +412,16 @@ def crear_resumen(mep, relacionados):
         )
     )
 
-    validos = relacionados[relacionados["ID_ESCUELA"].notna()].copy()
-
+    # Se contabiliza cada fila válida de la hoja resumen MPAS, tal como está registrada.
     total_mpas = (
-        validos.groupby(
+        relacionados.groupby(
             ["PROVINCIA_N", "CANTON_N", "DISTRITO_N"],
-            as_index=False
+            as_index=False,
+            dropna=False
         )
         .agg(
-            ESCUELAS_ABORDADAS=("ID_ESCUELA", "nunique"),
+            ESCUELAS_ABORDADAS=("REGISTRO_MPAS_ID", "count"),
+            CENTROS_UNICOS_CODIGO=("CODIGO_MEP_CORRECTO", lambda s: s[s.ne("")].nunique()),
             NINOS_ABORDADOS=("NINOS", "sum"),
         )
     )
@@ -434,12 +432,12 @@ def crear_resumen(mep, relacionados):
         how="left"
     )
 
-    resumen["ESCUELAS_ABORDADAS"] = (
-        resumen["ESCUELAS_ABORDADAS"].fillna(0).astype(int)
-    )
-    resumen["NINOS_ABORDADOS"] = (
-        resumen["NINOS_ABORDADOS"].fillna(0).round().astype(int)
-    )
+    for col in ["ESCUELAS_ABORDADAS", "CENTROS_UNICOS_CODIGO", "NINOS_ABORDADOS"]:
+        resumen[col] = resumen[col].fillna(0)
+
+    resumen["ESCUELAS_ABORDADAS"] = resumen["ESCUELAS_ABORDADAS"].astype(int)
+    resumen["CENTROS_UNICOS_CODIGO"] = resumen["CENTROS_UNICOS_CODIGO"].astype(int)
+    resumen["NINOS_ABORDADOS"] = resumen["NINOS_ABORDADOS"].round().astype(int)
 
     resumen["PENDIENTES"] = (
         resumen["ESCUELAS_MEP"] - resumen["ESCUELAS_ABORDADAS"]
@@ -457,10 +455,8 @@ def crear_resumen(mep, relacionados):
         ),
         axis=1
     )
-
     resumen["LAT"] = [c[0] for c in coords]
     resumen["LON"] = [c[1] for c in coords]
-
     return resumen
 
 
@@ -579,10 +575,10 @@ except Exception as exc:
 # ============================================================
 with st.sidebar:
     st.success(f"MEP: {len(mep):,} escuelas leídas")
-    st.success(f"MPAS: {len(mpas):,} escuelas registradas")
+    st.success(f"MPAS: {len(mpas):,} centros registrados")
 
-    coincidencias = relacionados["ID_ESCUELA"].notna().sum()
-    sin_coincidencia = relacionados["ID_ESCUELA"].isna().sum()
+    coincidencias = relacionados["TIPO_COINCIDENCIA"].eq("Código MEP / Código presupuestario").sum()
+    sin_coincidencia = (~relacionados["TIPO_COINCIDENCIA"].eq("Código MEP / Código presupuestario")).sum()
 
     st.metric("Coincidencias encontradas", f"{coincidencias:,}")
     st.metric("Sin coincidencia", f"{sin_coincidencia:,}")
@@ -862,7 +858,7 @@ with tab_lista:
     columnas = [
         "PROVINCIA", "CANTON", "DISTRITO",
         "ESCUELA_MEP", "ESCUELA_MPAS",
-        "CODIGO_N", "NINOS", "TIPO_COINCIDENCIA"
+        "CODIGO_N", "CODIGO_MEP_CORRECTO", "NINOS", "TIPO_COINCIDENCIA"
     ]
 
     lista = abordadas[columnas].sort_values(
@@ -875,7 +871,8 @@ with tab_lista:
         "DISTRITO": "Distrito",
         "ESCUELA_MEP": "Escuela según MEP",
         "ESCUELA_MPAS": "Escuela registrada en MPAS",
-        "CODIGO_N": "Código MEP",
+        "CODIGO_N": "Código registrado en MPAS",
+        "CODIGO_MEP_CORRECTO": "Código presupuestario MEP",
         "NINOS": "Niños abordados",
         "TIPO_COINCIDENCIA": "Tipo de coincidencia"
     })
