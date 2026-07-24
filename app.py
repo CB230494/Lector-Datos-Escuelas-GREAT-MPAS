@@ -1,5 +1,6 @@
 import io
 import re
+import math
 import unicodedata
 from pathlib import Path
 
@@ -933,44 +934,104 @@ else:
         prefer_canvas=True
     )
 
-    for _, fila in filtrado.iterrows():
-        tiene_actividad = int(fila["ESCUELAS_ABORDADAS"]) > 0
-        color_pin = "green" if tiene_actividad else "red"
-        icono_pin = "ok" if tiene_actividad else "remove"
-        estado = "CON ACTIVIDAD" if tiene_actividad else "SIN ACTIVIDAD"
+    # Centros con actividad filtrados. Cada fila tendrá su propio pin verde.
+    centros_mapa = relacionados[
+        relacionados["ID_ESCUELA"].notna()
+    ].copy()
 
-        popup = folium.Popup(
-            f"""
-            <div style="width:305px;font-family:Arial">
-                <h4 style="margin-bottom:5px">{fila['DISTRITO']}</h4>
-                <b>Estado:</b> {estado}<br>
-                <b>Región MEP:</b> {fila['REGION_MEP']}<br>
-                <b>Provincia:</b> {fila['PROVINCIA']}<br>
-                <b>Cantón:</b> {fila['CANTON']}<br><hr>
-                <b>Centros MEP:</b> {int(fila['ESCUELAS_MEP'])}<br>
-                <b>Centros con actividad:</b> {int(fila['ESCUELAS_ABORDADAS'])}<br>
-                <b>Centros pendientes:</b> {int(fila['PENDIENTES'])}<br>
-                <b>Niños abordados:</b> {int(fila['NINOS_ABORDADOS'])}<br>
-                <b>Cobertura:</b> {float(fila['COBERTURA']):.1f}%
-            </div>
-            """,
-            max_width=350
+    if region != "Todas":
+        centros_mapa = centros_mapa[centros_mapa["REGION_MEP"].eq(region)]
+    if provincia != "Todas":
+        centros_mapa = centros_mapa[
+            centros_mapa["PROVINCIA"].map(normalizar).eq(normalizar(provincia))
+        ]
+    if canton != "Todos":
+        centros_mapa = centros_mapa[
+            centros_mapa["CANTON"].map(normalizar).eq(normalizar(canton))
+        ]
+    if distrito != "Todos":
+        centros_mapa = centros_mapa[
+            centros_mapa["DISTRITO"].map(normalizar).eq(normalizar(distrito))
+        ]
+
+    # Pines rojos: un pin por distrito sin actividad.
+    if filtro_actividad in ["Todos", "Sin actividad"]:
+        sin_actividad = filtrado[filtrado["ESCUELAS_ABORDADAS"] == 0].copy()
+        for _, fila in sin_actividad.iterrows():
+            popup = folium.Popup(
+                f"""
+                <div style="width:300px;font-family:Arial">
+                    <h4 style="margin-bottom:5px">{fila['DISTRITO']}</h4>
+                    <b>Estado:</b> SIN ACTIVIDAD<br>
+                    <b>Región MEP:</b> {fila['REGION_MEP']}<br>
+                    <b>Provincia:</b> {fila['PROVINCIA']}<br>
+                    <b>Cantón:</b> {fila['CANTON']}<br><hr>
+                    <b>Centros MEP:</b> {int(fila['ESCUELAS_MEP'])}<br>
+                    <b>Centros pendientes:</b> {int(fila['PENDIENTES'])}
+                </div>
+                """,
+                max_width=340
+            )
+            folium.Marker(
+                location=[fila["LAT"], fila["LON"]],
+                icon=folium.Icon(color="red", icon="remove", prefix="glyphicon"),
+                tooltip=f"{fila['DISTRITO']} · SIN ACTIVIDAD",
+                popup=popup
+            ).add_to(mapa)
+
+    # Pines verdes: uno por cada fila de centro educativo mostrada en la lista.
+    # Cuando varios centros comparten distrito, se separan ligeramente en círculo
+    # para que ninguno quede oculto debajo de otro.
+    if filtro_actividad in ["Todos", "Con actividad"] and not centros_mapa.empty:
+        centros_mapa = centros_mapa.copy()
+        centros_mapa["CLAVE_UBICACION"] = (
+            centros_mapa["PROVINCIA"].map(normalizar) + "|" +
+            centros_mapa["CANTON"].map(normalizar) + "|" +
+            centros_mapa["DISTRITO"].map(normalizar)
         )
 
-        folium.Marker(
-            location=[fila["LAT"], fila["LON"]],
-            icon=folium.Icon(
-                color=color_pin,
-                icon=icono_pin,
-                prefix="glyphicon"
-            ),
-            tooltip=(
-                f"{fila['DISTRITO']} · {estado}: "
-                f"{int(fila['ESCUELAS_ABORDADAS'])}/"
-                f"{int(fila['ESCUELAS_MEP'])} centros"
-            ),
-            popup=popup
-        ).add_to(mapa)
+        for _, grupo in centros_mapa.groupby("CLAVE_UBICACION", dropna=False):
+            grupo = grupo.reset_index(drop=True)
+            total_grupo = len(grupo)
+            distrito_n = normalizar(grupo.at[0, "DISTRITO"])
+            canton_n = normalizar(grupo.at[0, "CANTON"])
+            provincia_n = normalizar(grupo.at[0, "PROVINCIA"])
+            lat_base, lon_base = obtener_coordenadas(distrito_n, canton_n, provincia_n)
+
+            for posicion, fila in grupo.iterrows():
+                if total_grupo == 1:
+                    lat, lon = lat_base, lon_base
+                else:
+                    angulo = (2 * math.pi * posicion) / total_grupo
+                    radio = 0.008 + min(total_grupo, 8) * 0.0005
+                    lat = lat_base + radio * math.cos(angulo)
+                    lon = lon_base + radio * math.sin(angulo)
+
+                codigo = fila.get("CODIGO_MEP_CORRECTO", "")
+                ninos = int(round(float(fila.get("NINOS", 0) or 0)))
+
+                popup = folium.Popup(
+                    f"""
+                    <div style="width:320px;font-family:Arial">
+                        <h4 style="margin-bottom:5px">{fila['ESCUELA_MEP']}</h4>
+                        <b>Estado:</b> CON ACTIVIDAD<br>
+                        <b>Código MEP:</b> {codigo}<br>
+                        <b>Región MEP:</b> {fila['REGION_MEP']}<br>
+                        <b>Provincia:</b> {fila['PROVINCIA']}<br>
+                        <b>Cantón:</b> {fila['CANTON']}<br>
+                        <b>Distrito:</b> {fila['DISTRITO']}<br>
+                        <b>Niños abordados:</b> {ninos}
+                    </div>
+                    """,
+                    max_width=360
+                )
+
+                folium.Marker(
+                    location=[lat, lon],
+                    icon=folium.Icon(color="green", icon="ok", prefix="glyphicon"),
+                    tooltip=f"{fila['ESCUELA_MEP']} · {fila['DISTRITO']}",
+                    popup=popup
+                ).add_to(mapa)
 
     st_folium(
         mapa,
