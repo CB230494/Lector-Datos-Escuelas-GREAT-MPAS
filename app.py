@@ -285,19 +285,16 @@ def leer_totales_oficiales_mpas(contenido, nombre_archivo):
     return totales
 
 
-
 def preparar_mep(df):
     """
-    Prepara el universo oficial MEP.
+    Lee únicamente las hojas regionales de la base MEP.
 
-    Regla de conteo:
-    - Cada fila válida de la columna Institución representa un centro educativo.
-    - El total se conserva por hoja regional MEP.
-    - No se deduplica por nombre.
-    - No se mezclan centros de otras hojas regionales.
-
-    Regla de asociación:
-    - Código MEP de MPAS = Código presupuestario de MEP.
+    Reglas:
+    - Incluye las hojas regionales y la hoja Preescolar.
+    - Excluye únicamente las filas finales de totales.
+    - Conserva centros con o sin código presupuestario para que el total
+      coincida con el total visible de cada hoja regional.
+    - La región se toma de HOJA_ORIGEN.
     """
     if "HOJA_ORIGEN" not in df.columns:
         raise ValueError("La base MEP no conserva el nombre de la hoja de origen.")
@@ -305,28 +302,25 @@ def preparar_mep(df):
     df = df.copy()
 
     col_escuela = buscar_columna(df.columns, [
-        "Institución", "Institucion",
-        "Nombre del centro educativo", "Escuela"
+        "Institución", "Nombre del centro educativo", "Escuela"
     ])
     col_provincia = buscar_columna(df.columns, ["Provincia"])
     col_canton = buscar_columna(df.columns, ["Cantón", "Canton"])
     col_distrito = buscar_columna(df.columns, ["Distrito"])
     col_codigo = buscar_columna(df.columns, [
-        "Código presupuestario", "Codigo presupuestario",
-        "Código MEP", "Codigo MEP"
+        "Código presupuestario", "Codigo presupuestario", "Código MEP", "Codigo MEP"
     ])
 
     requeridas = {
-        "Institución": col_escuela,
-        "Provincia": col_provincia,
-        "Cantón": col_canton,
-        "Distrito": col_distrito,
+        "institución": col_escuela,
+        "provincia": col_provincia,
+        "cantón": col_canton,
+        "distrito": col_distrito,
     }
     faltantes = [k for k, v in requeridas.items() if v is None]
     if faltantes:
         raise ValueError(
-            "No se encontraron en la base MEP las columnas: "
-            + ", ".join(faltantes)
+            "No se encontraron en la base MEP las columnas: " + ", ".join(faltantes)
         )
 
     salida = pd.DataFrame({
@@ -338,17 +332,10 @@ def preparar_mep(df):
         "CODIGO_MEP": df[col_codigo] if col_codigo else "",
     })
 
-    # Solo cuenta filas reales que tengan Institución y ubicación.
-    # Esto excluye las filas finales que muestran únicamente el total.
-    salida = salida.dropna(
-        subset=["ESCUELA_MEP", "PROVINCIA", "CANTON", "DISTRITO"]
-    )
-
+    # Una escuela válida debe tener nombre y ubicación territorial.
+    # Esto elimina automáticamente las filas finales que solo contienen 312, 397, etc.
+    salida = salida.dropna(subset=["ESCUELA_MEP", "PROVINCIA", "CANTON", "DISTRITO"])
     salida["ESCUELA_MEP"] = salida["ESCUELA_MEP"].astype(str).str.strip()
-    salida = salida[
-        salida["ESCUELA_MEP"].ne("")
-        & ~salida["ESCUELA_MEP"].map(normalizar).str.startswith("TOTAL")
-    ].copy()
 
     for col in ["REGION_MEP", "PROVINCIA", "CANTON", "DISTRITO"]:
         salida[col] = salida[col].fillna("").astype(str).str.strip()
@@ -357,38 +344,25 @@ def preparar_mep(df):
     salida["ESCUELA_MEP_N"] = salida["ESCUELA_MEP"].map(normalizar)
     salida["CODIGO_N"] = salida["CODIGO_MEP"].map(normalizar_codigo)
 
-    # Identificador único de la fila MEP.
-    # No se usa para reducir el conteo: cada fila válida cuenta.
-    salida = salida.reset_index(drop=True)
-    salida["ID_FILA_MEP"] = (
-        salida["REGION_MEP_N"] + "|" +
-        salida.index.astype(str)
-    )
-
-    # Clave por nombre y ubicación para revisión.
-    salida["ID_CENTRO_NOMBRE"] = (
-        salida["REGION_MEP_N"] + "|" +
-        salida["PROVINCIA_N"] + "|" +
-        salida["CANTON_N"] + "|" +
-        salida["DISTRITO_N"] + "|" +
-        salida["ESCUELA_MEP_N"]
-    )
-
     salida["CLAVE_NOMBRE"] = (
+        salida["REGION_MEP_N"] + "|" +
         salida["PROVINCIA_N"] + "|" +
         salida["CANTON_N"] + "|" +
         salida["DISTRITO_N"] + "|" +
         salida["ESCUELA_MEP_N"]
     )
 
-    # Asociación principal por código; nombre solo como respaldo.
     salida["ID_ESCUELA"] = np.where(
         salida["CODIGO_N"].ne(""),
         "COD|" + salida["CODIGO_N"],
         "NOM|" + salida["CLAVE_NOMBRE"]
     )
 
-    return salida
+    # No se eliminan centros sin código. Solo se elimina un duplicado exacto
+    # dentro de la misma hoja regional.
+    return salida.drop_duplicates(
+        ["REGION_MEP_N", "PROVINCIA_N", "CANTON_N", "DISTRITO_N", "ESCUELA_MEP_N"]
+    )
 
 def preparar_mpas(df):
     """
@@ -554,16 +528,9 @@ def obtener_coordenadas(distrito, canton, provincia):
 
 
 
-
 def crear_resumen(mep, relacionados):
-    """
-    Denominador MEP:
-    cantidad de filas válidas de la columna Institución por hoja regional,
-    provincia, cantón y distrito.
-
-    Numerador MPAS:
-    centros abordados asociados por Código MEP / Código presupuestario.
-    """
+    # El universo MEP se cuenta por hoja regional + provincia + cantón + distrito.
+    # Así R2 Alajuela conserva exactamente sus 312 centros.
     total_mep = (
         mep.groupby(
             ["REGION_MEP_N", "PROVINCIA_N", "CANTON_N", "DISTRITO_N"],
@@ -574,26 +541,14 @@ def crear_resumen(mep, relacionados):
             PROVINCIA=("PROVINCIA", "first"),
             CANTON=("CANTON", "first"),
             DISTRITO=("DISTRITO", "first"),
-            ESCUELAS_MEP=("ID_FILA_MEP", "count"),
+            ESCUELAS_MEP=("ID_ESCUELA", "count"),
         )
     )
 
+    # Solo los registros que pudieron ubicarse en MEP se distribuyen territorialmente.
     ubicados = relacionados[
         relacionados["REGION_MEP_N"].ne("CODIGO NO LOCALIZADO EN MEP")
     ].copy()
-
-    # Para cobertura, un centro trabajado se cuenta una vez por centro oficial.
-    ubicados["ID_CENTRO_ABORDADO"] = np.where(
-        ubicados["CODIGO_MEP_CORRECTO"].map(normalizar_codigo).ne(""),
-        "COD|" + ubicados["CODIGO_MEP_CORRECTO"].map(normalizar_codigo),
-        (
-            "NOM|" +
-            ubicados["PROVINCIA_N"] + "|" +
-            ubicados["CANTON_N"] + "|" +
-            ubicados["DISTRITO_N"] + "|" +
-            ubicados["ESCUELA_MEP"].map(normalizar)
-        )
-    )
 
     total_mpas = (
         ubicados.groupby(
@@ -602,8 +557,8 @@ def crear_resumen(mep, relacionados):
             dropna=False
         )
         .agg(
-            ESCUELAS_ABORDADAS=("ID_CENTRO_ABORDADO", "nunique"),
-            REGISTROS_MPAS=("REGISTRO_MPAS_ID", "count"),
+            ESCUELAS_ABORDADAS=("REGISTRO_MPAS_ID", "count"),
+            CENTROS_UNICOS_CODIGO=("CODIGO_MEP_CORRECTO", lambda s: s[s.ne("")].nunique()),
             NINOS_ABORDADOS=("NINOS", "sum"),
         )
     )
@@ -614,11 +569,11 @@ def crear_resumen(mep, relacionados):
         how="left"
     )
 
-    for col in ["ESCUELAS_ABORDADAS", "REGISTROS_MPAS", "NINOS_ABORDADOS"]:
+    for col in ["ESCUELAS_ABORDADAS", "CENTROS_UNICOS_CODIGO", "NINOS_ABORDADOS"]:
         resumen[col] = resumen[col].fillna(0)
 
     resumen["ESCUELAS_ABORDADAS"] = resumen["ESCUELAS_ABORDADAS"].astype(int)
-    resumen["REGISTROS_MPAS"] = resumen["REGISTROS_MPAS"].astype(int)
+    resumen["CENTROS_UNICOS_CODIGO"] = resumen["CENTROS_UNICOS_CODIGO"].astype(int)
     resumen["NINOS_ABORDADOS"] = resumen["NINOS_ABORDADOS"].round().astype(int)
 
     resumen["PENDIENTES"] = (
@@ -639,7 +594,6 @@ def crear_resumen(mep, relacionados):
     )
     resumen["LAT"] = [c[0] for c in coords]
     resumen["LON"] = [c[1] for c in coords]
-
     return resumen
 
 def color_cobertura(pct):
@@ -759,7 +713,7 @@ except Exception as exc:
 # INFORMACIÓN DE LECTURA
 # ============================================================
 with st.sidebar:
-    st.success(f"MEP: {len(mep):,} instituciones válidas leídas")
+    st.success(f"MEP regional: {len(mep):,} centros leídos")
     st.success(f"MPAS: {len(mpas):,} centros registrados")
 
     coincidencias = relacionados["TIPO_COINCIDENCIA"].eq("Código MEP / Código presupuestario").sum()
@@ -821,29 +775,48 @@ distrito = c3.selectbox("Distrito", distritos)
 if distrito != "Todos":
     filtrado = filtrado[filtrado["DISTRITO"].eq(distrito)]
 
-# Filtro específico para identificar dónde hubo o no actividad MPAS.
+# Guarda el universo territorial completo antes del filtro de actividad.
+# Este universo se usa para métricas y cobertura.
+filtrado_territorial = filtrado.copy()
+
+# El filtro de actividad afecta únicamente el mapa y la lista.
 filtro_actividad = st.radio(
     "Estado de actividad en el distrito",
     ["Todos", "Con actividad", "Sin actividad"],
     horizontal=True,
     help=(
-        "Con actividad: el distrito tiene al menos una escuela abordada. "
-        "Sin actividad: no registra escuelas abordadas en la base MPAS."
+        "Este filtro cambia únicamente lo que se muestra en el mapa y la lista. "
+        "No modifica el total de instituciones MEP ni el porcentaje de cobertura."
     )
 )
 
+filtrado_mapa = filtrado_territorial.copy()
+
 if filtro_actividad == "Con actividad":
-    filtrado = filtrado[filtrado["ESCUELAS_ABORDADAS"] > 0]
+    filtrado_mapa = filtrado_mapa[
+        filtrado_mapa["ESCUELAS_ABORDADAS"] > 0
+    ]
 elif filtro_actividad == "Sin actividad":
-    filtrado = filtrado[filtrado["ESCUELAS_ABORDADAS"] == 0]
+    filtrado_mapa = filtrado_mapa[
+        filtrado_mapa["ESCUELAS_ABORDADAS"] == 0
+    ]
+
+st.caption(
+    "El estado de actividad filtra el mapa y la lista. "
+    "Las métricas mantienen el universo completo del territorio seleccionado."
+)
 
 
 # ============================================================
 # MÉTRICAS
 # ============================================================
-total_mep = int(filtrado["ESCUELAS_MEP"].sum())
-total_abordadas_ubicadas = int(filtrado["ESCUELAS_ABORDADAS"].sum())
-total_ninos_ubicados = int(filtrado["NINOS_ABORDADOS"].sum())
+total_mep = int(filtrado_territorial["ESCUELAS_MEP"].sum())
+total_abordadas_ubicadas = int(
+    filtrado_territorial["ESCUELAS_ABORDADAS"].sum()
+)
+total_ninos_ubicados = int(
+    filtrado_territorial["NINOS_ABORDADOS"].sum()
+)
 
 # Cuando no hay filtros territoriales ni filtro de actividad, se conserva
 # íntegramente el total reportado por MPAS, aunque existan códigos pendientes.
@@ -852,7 +825,6 @@ vista_nacional_completa = (
     and provincia == "Todas"
     and canton == "Todos"
     and distrito == "Todos"
-    and filtro_actividad == "Todos"
 )
 
 if vista_nacional_completa:
@@ -873,7 +845,7 @@ cobertura = (total_abordadas / total_mep * 100) if total_mep else 0
 
 if vista_nacional_completa:
     m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Instituciones MEP", f"{total_mep:,}")
+    m1.metric("Centros MEP válidos", f"{total_mep:,}")
     m2.metric("Centros abordados MPAS", f"{total_abordadas:,}")
     m3.metric("Primaria", f"{total_primaria:,}")
     m4.metric("Intermedia", f"{total_intermedia:,}")
@@ -881,7 +853,7 @@ if vista_nacional_completa:
     m6.metric("Cobertura", f"{cobertura:.1f}%")
 else:
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Instituciones MEP", f"{total_mep:,}")
+    m1.metric("Centros MEP válidos", f"{total_mep:,}")
     m2.metric("Centros MPAS ubicados", f"{total_abordadas:,}")
     m3.metric("Centros pendientes", f"{total_pendientes:,}")
     m4.metric("Niños ubicados", f"{total_ninos:,}")
@@ -907,8 +879,7 @@ st.markdown(
     f"""
     <div class="resumen">
     Según la base MEP, en <b>{territorio}</b> existen
-    <b>{total_mep:,} instituciones registradas en la columna Institución</b>.
-    La base MPAS reporta
+    <b>{total_mep:,} centros educativos válidos</b>. La base MPAS reporta
     <b>{total_abordadas:,} centros abordados</b> y
     <b>{total_ninos:,} niños</b>. La cobertura corresponde al
     <b>{cobertura:.1f}%</b>.
@@ -927,9 +898,8 @@ if vista_nacional_completa and pendientes_codigo > 0:
 
 with st.expander("Control de cifras de las bases"):
     st.write(
-        f"**Base MEP:** {len(mep):,} instituciones válidas, contadas directamente "
-        "desde cada fila no vacía de la columna Institución. "
-        "No se deduplican por nombre ni por código."
+        f"**Base MEP:** {len(mep):,} filas válidas de centros educativos. "
+        "Las filas finales que solo muestran el total de cada hoja no se cuentan como escuelas."
     )
     st.write(
         f"**Totales oficiales MPAS:** {totales_oficiales_mpas['escuelas']:,} centros, "
@@ -956,12 +926,12 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-if filtrado.empty:
+if filtrado_mapa.empty:
     st.warning("No existen datos para los filtros seleccionados.")
 else:
     centro = [
-        float(filtrado["LAT"].mean()),
-        float(filtrado["LON"].mean())
+        float(filtrado_mapa["LAT"].mean()),
+        float(filtrado_mapa["LON"].mean())
     ]
 
     zoom = 8
@@ -1004,7 +974,9 @@ else:
 
     # Pines rojos: un pin por distrito sin actividad.
     if filtro_actividad in ["Todos", "Sin actividad"]:
-        sin_actividad = filtrado[filtrado["ESCUELAS_ABORDADAS"] == 0].copy()
+        sin_actividad = filtrado_mapa[
+            filtrado_mapa["ESCUELAS_ABORDADAS"] == 0
+        ].copy()
         for _, fila in sin_actividad.iterrows():
             popup = folium.Popup(
                 f"""
