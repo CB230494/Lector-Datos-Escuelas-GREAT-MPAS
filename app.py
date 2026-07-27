@@ -156,87 +156,52 @@ try:
     mep=preparar_mep(leer_libro(fm.getvalue(),fm.name));mpas=relacionar(mep,preparar_programa(leer_libro(fp.getvalue(),fp.name),'MPAS'));great=relacionar(mep,preparar_programa(leer_libro(fg.getvalue(),fg.name),'GREAT'));tm=leer_totales(fp.getvalue(),fp.name);tg=leer_totales(fg.getvalue(),fg.name)
 except Exception as e:st.error(f'No fue posible procesar las bases: {e}');st.stop()
 
+
 # ============================================================
-# CLASIFICACIÓN UNIFICADA MPAS / GREAT
+# VISTAS MPAS / GREAT SIN ALTERAR LOS TOTALES OFICIALES
 # ============================================================
 todos_registros = pd.concat([mpas, great], ignore_index=True)
 
-validos_programas = todos_registros[
-    todos_registros["ID_FILA_MEP"].notna()
-].copy()
+mpas_validos = mpas[mpas["ID_FILA_MEP"].notna()].copy()
+great_validos = great[great["ID_FILA_MEP"].notna()].copy()
 
-# Determina en cuáles programas aparece cada centro oficial.
-programas_por_centro = (
-    validos_programas.groupby("ID_NOMBRE")["PROGRAMA"]
-    .agg(lambda s: set(s.dropna().astype(str)))
-    .to_dict()
-)
-
-def clasificar_programas(programas):
-    programas = set(programas)
-    if {"MPAS", "GREAT"}.issubset(programas):
-        return "MPAS y GREAT"
-    if "MPAS" in programas:
-        return "Solo MPAS"
-    if "GREAT" in programas:
-        return "Solo GREAT"
-    return "Sin programa"
-
-clasificacion_por_centro = {
-    centro_id: clasificar_programas(programas)
-    for centro_id, programas in programas_por_centro.items()
-}
-
-validos_programas["CLASIFICACION"] = (
-    validos_programas["ID_NOMBRE"]
-    .map(clasificacion_por_centro)
-    .fillna("Sin programa")
-)
+ids_mpas = set(mpas_validos["ID_NOMBRE"].dropna())
+ids_great = set(great_validos["ID_NOMBRE"].dropna())
+ids_ambos = ids_mpas.intersection(ids_great)
+ids_union = ids_mpas.union(ids_great)
 
 st.subheader("Visualización de programas")
 
 vista_programa = st.radio(
-    "Seleccione los centros que desea mostrar",
+    "Seleccione la información que desea mostrar",
     [
         "Todos",
-        "Solo MPAS",
-        "Solo GREAT",
+        "MPAS",
+        "GREAT",
         "MPAS y GREAT en el mismo centro",
     ],
     horizontal=True,
     help=(
-        "Todos: muestra verde, azul y morado. "
-        "Solo MPAS: únicamente centros exclusivos de MPAS. "
-        "Solo GREAT: únicamente centros exclusivos de GREAT. "
-        "MPAS y GREAT en el mismo centro: únicamente centros morados."
+        "MPAS muestra todos los centros del programa MPAS, incluso si también "
+        "fueron abordados por GREAT. GREAT aplica la misma regla. "
+        "La cuarta opción muestra únicamente los centros donde coinciden ambos."
     ),
 )
 
-if vista_programa == "Solo MPAS":
-    ids_seleccionados = {
-        centro_id
-        for centro_id, clase in clasificacion_por_centro.items()
-        if clase == "Solo MPAS"
-    }
-elif vista_programa == "Solo GREAT":
-    ids_seleccionados = {
-        centro_id
-        for centro_id, clase in clasificacion_por_centro.items()
-        if clase == "Solo GREAT"
-    }
+if vista_programa == "MPAS":
+    act = mpas.copy()
+    ids_seleccionados = ids_mpas
+elif vista_programa == "GREAT":
+    act = great.copy()
+    ids_seleccionados = ids_great
 elif vista_programa == "MPAS y GREAT en el mismo centro":
-    ids_seleccionados = {
-        centro_id
-        for centro_id, clase in clasificacion_por_centro.items()
-        if clase == "MPAS y GREAT"
-    }
+    act = todos_registros[
+        todos_registros["ID_NOMBRE"].isin(ids_ambos)
+    ].copy()
+    ids_seleccionados = ids_ambos
 else:
-    ids_seleccionados = set(clasificacion_por_centro.keys())
-
-# Registros de actividad correspondientes a los centros seleccionados.
-act = todos_registros[
-    todos_registros["ID_NOMBRE"].isin(ids_seleccionados)
-].copy()
+    act = todos_registros.copy()
+    ids_seleccionados = ids_union
 
 r = resumen(mep, act)
 
@@ -277,7 +242,6 @@ dis = d.selectbox(
 if dis != "Todos":
     f = f[f["DISTRITO"].eq(dis)]
 
-# Universo territorial completo para las métricas.
 f_territorial = f.copy()
 
 estado = st.radio(
@@ -292,7 +256,6 @@ if estado == "Con actividad":
 elif estado == "Sin actividad":
     f_mapa = f_mapa[f_mapa["CENTROS_ACTIVOS"] == 0]
 
-# Registros válidos de los programas seleccionados, filtrados territorialmente.
 fa = act[act["ID_FILA_MEP"].notna()].copy()
 
 if reg != "Todas":
@@ -304,14 +267,22 @@ if can != "Todos":
 if dis != "Todos":
     fa = fa[fa["DISTRITO"].eq(dis)]
 
+# Vista nacional sin filtros territoriales.
+vista_nacional = (
+    reg == "Todas"
+    and pro == "Todas"
+    and can == "Todos"
+    and dis == "Todos"
+)
+
 # ============================================================
-# UNA FILA POR CENTRO PARA MÉTRICAS, MAPA Y LISTA
+# CENTROS UNIFICADOS PARA MAPA Y LISTA
 # ============================================================
 if fa.empty:
     centros_unificados = pd.DataFrame(columns=[
-        "ID_NOMBRE", "CLASIFICACION", "REGION_MEP", "PROVINCIA",
-        "CANTON", "DISTRITO", "CENTRO_MEP", "CODIGO_N",
-        "PRIMARIA", "INTERMEDIA", "NINOS", "PROGRAMAS"
+        "ID_NOMBRE", "REGION_MEP", "PROVINCIA", "CANTON", "DISTRITO",
+        "CENTRO_MEP", "CODIGO_N", "PRIMARIA", "INTERMEDIA", "NINOS",
+        "PROGRAMAS", "CLASIFICACION"
     ])
 else:
     centros_unificados = (
@@ -329,57 +300,107 @@ else:
             PROGRAMAS=("PROGRAMA", lambda s: " + ".join(sorted(set(s.astype(str))))),
         )
     )
+
+    def clasificar_id(centro_id):
+        en_mpas = centro_id in ids_mpas
+        en_great = centro_id in ids_great
+        if en_mpas and en_great:
+            return "MPAS y GREAT"
+        if en_mpas:
+            return "MPAS"
+        if en_great:
+            return "GREAT"
+        return "Sin programa"
+
     centros_unificados["CLASIFICACION"] = (
-        centros_unificados["ID_NOMBRE"]
-        .map(clasificacion_por_centro)
-        .fillna("Sin programa")
+        centros_unificados["ID_NOMBRE"].map(clasificar_id)
     )
 
 nm = int(f_territorial["INSTITUCIONES_MEP"].sum())
-cent = int(len(centros_unificados))
-pri = int(centros_unificados["PRIMARIA"].sum()) if not centros_unificados.empty else 0
-inter = int(centros_unificados["INTERMEDIA"].sum()) if not centros_unificados.empty else 0
-nin = int(centros_unificados["NINOS"].sum()) if not centros_unificados.empty else 0
+
+# ============================================================
+# MÉTRICAS: TOTALES OFICIALES EN VISTAS INDIVIDUALES
+# ============================================================
+if vista_nacional and vista_programa == "MPAS":
+    cent = int(tm["centros"])
+    pri = int(tm["primaria"])
+    inter = int(tm["intermedia"])
+    nin = int(tm["ninos"])
+elif vista_nacional and vista_programa == "GREAT":
+    cent = int(tg["centros"])
+    pri = int(tg["primaria"])
+    inter = int(tg["intermedia"])
+    nin = int(tg["ninos"])
+else:
+    cent = int(len(centros_unificados))
+    pri = int(centros_unificados["PRIMARIA"].sum()) if not centros_unificados.empty else 0
+    inter = int(centros_unificados["INTERMEDIA"].sum()) if not centros_unificados.empty else 0
+    nin = int(centros_unificados["NINOS"].sum()) if not centros_unificados.empty else 0
+
 cov = cent / nm * 100 if nm else 0
 
-conteo_mpas = int(
-    centros_unificados["CLASIFICACION"].isin(["Solo MPAS", "MPAS y GREAT"]).sum()
-) if not centros_unificados.empty else 0
-conteo_great = int(
-    centros_unificados["CLASIFICACION"].isin(["Solo GREAT", "MPAS y GREAT"]).sum()
-) if not centros_unificados.empty else 0
-conteo_ambos = int(
-    centros_unificados["CLASIFICACION"].eq("MPAS y GREAT").sum()
-) if not centros_unificados.empty else 0
+if vista_programa in ["MPAS", "GREAT"]:
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Instituciones MEP", f"{nm:,}")
+    m2.metric(f"Centros {vista_programa}", f"{cent:,}")
+    m3.metric("Primaria", f"{pri:,}")
+    m4.metric("Intermedia", f"{inter:,}")
+    m5.metric("Total niños", f"{nin:,}")
+    m6.metric("Cobertura", f"{cov:.1f}%")
+else:
+    conteo_mpas = len(ids_mpas.intersection(ids_seleccionados))
+    conteo_great = len(ids_great.intersection(ids_seleccionados))
+    conteo_ambos = len(ids_ambos.intersection(ids_seleccionados))
 
-m1, m2, m3, m4, m5, m6 = st.columns(6)
-m1.metric("Instituciones MEP", f"{nm:,}")
-m2.metric("Centros visibles", f"{cent:,}")
-m3.metric("MPAS", f"{conteo_mpas:,}")
-m4.metric("GREAT", f"{conteo_great:,}")
-m5.metric("Ambos programas", f"{conteo_ambos:,}")
-m6.metric("Cobertura", f"{cov:.1f}%")
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Instituciones MEP", f"{nm:,}")
+    m2.metric("Centros visibles", f"{cent:,}")
+    m3.metric("MPAS", f"{conteo_mpas:,}")
+    m4.metric("GREAT", f"{conteo_great:,}")
+    m5.metric("Ambos programas", f"{conteo_ambos:,}")
+    m6.metric("Cobertura", f"{cov:.1f}%")
 
 st.markdown(
     f"""
     <div class="resumen">
         <b>{vista_programa}</b>: se muestran <b>{cent:,} centros</b>
         de un universo territorial de <b>{nm:,} instituciones MEP</b>.
-        La cobertura corresponde al <b>{cov:.1f}%</b> y los registros
-        visibles suman <b>{nin:,} niños reportados</b>.
+        La cobertura corresponde al <b>{cov:.1f}%</b> y se reportan
+        <b>{nin:,} niños</b>.
     </div>
     """,
     unsafe_allow_html=True,
 )
 
+if vista_nacional and vista_programa == "MPAS":
+    st.success(
+        f"Totales oficiales MPAS: {tm['centros']:,} centros · "
+        f"{tm['primaria']:,} primaria · {tm['intermedia']:,} intermedia · "
+        f"{tm['ninos']:,} niños."
+    )
+elif vista_nacional and vista_programa == "GREAT":
+    st.success(
+        f"Totales oficiales GREAT: {tg['centros']:,} centros · "
+        f"{tg['primaria']:,} primaria · {tg['intermedia']:,} intermedia · "
+        f"{tg['ninos']:,} niños."
+    )
+
 # ============================================================
 # MAPA
 # ============================================================
 st.subheader("Mapa de seguimiento")
-st.caption(
-    "🟢 Solo MPAS · 🔵 Solo GREAT · 🟣 MPAS y GREAT en el mismo centro · "
-    "🔴 Distrito sin actividad para la selección actual"
-)
+
+if vista_programa == "MPAS":
+    st.caption("🟢 Centros MPAS · 🔴 Distritos sin actividad MPAS")
+elif vista_programa == "GREAT":
+    st.caption("🔵 Centros GREAT · 🔴 Distritos sin actividad GREAT")
+elif vista_programa == "MPAS y GREAT en el mismo centro":
+    st.caption("🟣 Centros donde coinciden MPAS y GREAT · 🔴 Distritos sin coincidencia")
+else:
+    st.caption(
+        "🟢 MPAS · 🔵 GREAT · 🟣 MPAS y GREAT en el mismo centro · "
+        "🔴 Distrito sin actividad"
+    )
 
 if f_mapa.empty:
     st.warning("No existen datos para los filtros seleccionados.")
@@ -390,7 +411,6 @@ else:
         tiles="CartoDB positron",
     )
 
-    # Distritos sin actividad para la categoría seleccionada.
     if estado in ["Todos", "Sin actividad"]:
         for _, q in f_mapa[f_mapa["CENTROS_ACTIVOS"] == 0].iterrows():
             folium.Marker(
@@ -450,15 +470,24 @@ else:
 
                 clase = q["CLASIFICACION"]
 
-                if clase == "MPAS y GREAT":
+                if vista_programa == "MPAS":
+                    color = "#16a34a"
+                    etiqueta_programa = "MPAS"
+                elif vista_programa == "GREAT":
+                    color = "#2563eb"
+                    etiqueta_programa = "GREAT"
+                elif vista_programa == "MPAS y GREAT en el mismo centro":
                     color = "#7e22ce"
                     etiqueta_programa = "MPAS y GREAT"
-                elif clase == "Solo MPAS":
+                elif clase == "MPAS y GREAT":
+                    color = "#7e22ce"
+                    etiqueta_programa = "MPAS y GREAT"
+                elif clase == "MPAS":
                     color = "#16a34a"
-                    etiqueta_programa = "Solo MPAS"
+                    etiqueta_programa = "MPAS"
                 else:
                     color = "#2563eb"
-                    etiqueta_programa = "Solo GREAT"
+                    etiqueta_programa = "GREAT"
 
                 html = f"""
                 <div style="
@@ -471,8 +500,7 @@ else:
 
                 popup = f"""
                 <b>{numero}. {q['CENTRO_MEP']}</b><br>
-                Clasificación: {etiqueta_programa}<br>
-                Programas registrados: {q['PROGRAMAS']}<br>
+                Programa: {etiqueta_programa}<br>
                 Código MEP: {q['CODIGO_N']}<br>
                 Región: {q['REGION_MEP']}<br>
                 Provincia: {q['PROVINCIA']}<br>
@@ -499,7 +527,7 @@ else:
 
         st.caption(
             f"Pines visibles: {numero - 1:,}. "
-            "Cada centro aparece una sola vez, aunque tenga ambos programas."
+            "La numeración se ajusta automáticamente a la selección."
         )
 
     st_folium(
@@ -554,7 +582,6 @@ else:
         "text/csv",
     )
 
-# Registros que no pudieron relacionarse con MEP.
 pend = pd.concat(
     [
         mpas[mpas["ID_FILA_MEP"].isna()],
