@@ -155,28 +155,421 @@ if not all([fm,fp,fg]):st.info('Cargue las tres bases para iniciar.');st.stop()
 try:
     mep=preparar_mep(leer_libro(fm.getvalue(),fm.name));mpas=relacionar(mep,preparar_programa(leer_libro(fp.getvalue(),fp.name),'MPAS'));great=relacionar(mep,preparar_programa(leer_libro(fg.getvalue(),fg.name),'GREAT'));tm=leer_totales(fp.getvalue(),fp.name);tg=leer_totales(fg.getvalue(),fg.name)
 except Exception as e:st.error(f'No fue posible procesar las bases: {e}');st.stop()
-vista=st.radio('Vista del programa',['MPAS','GREAT','Ambos'],horizontal=True);act=mpas.copy() if vista=='MPAS' else great.copy() if vista=='GREAT' else pd.concat([mpas,great],ignore_index=True)
-r=resumen(mep,act);st.subheader('Filtros territoriales');a,b,c,d=st.columns(4);reg=a.selectbox('Región MEP',['Todas']+sorted(r.REGION_MEP.unique().tolist()));f=r.copy();f=f if reg=='Todas' else f[f.REGION_MEP.eq(reg)];pro=b.selectbox('Provincia',['Todas']+sorted(f.PROVINCIA.unique().tolist()));f=f if pro=='Todas' else f[f.PROVINCIA.eq(pro)];can=c.selectbox('Cantón',['Todos']+sorted(f.CANTON.unique().tolist()));f=f if can=='Todos' else f[f.CANTON.eq(can)];dis=d.selectbox('Distrito',['Todos']+sorted(f.DISTRITO.unique().tolist()));f=f if dis=='Todos' else f[f.DISTRITO.eq(dis)];estado=st.radio('Estado de actividad',['Todos','Con actividad','Sin actividad'],horizontal=True);fmmap=f.copy();fmmap=fmmap[fmmap.CENTROS_ACTIVOS>0] if estado=='Con actividad' else fmmap[fmmap.CENTROS_ACTIVOS==0] if estado=='Sin actividad' else fmmap
-fa=act[act.ID_FILA_MEP.notna()].copy();fa=fa if reg=='Todas' else fa[fa.REGION_MEP.eq(reg)];fa=fa if pro=='Todas' else fa[fa.PROVINCIA.eq(pro)];fa=fa if can=='Todos' else fa[fa.CANTON.eq(can)];fa=fa if dis=='Todos' else fa[fa.DISTRITO.eq(dis)]
-nm=int(f.INSTITUCIONES_MEP.sum());cent=int(fa.ID_NOMBRE.nunique());pri=int(fa.PRIMARIA.sum());inter=int(fa.INTERMEDIA.sum());nin=int(fa.NINOS.sum());nac=all(x in ['Todas','Todos'] for x in [reg,pro,can,dis])
-if nac and vista=='MPAS' and tm['centros']:cent,pri,inter,nin=tm['centros'],tm['primaria'],tm['intermedia'],tm['ninos']
-if nac and vista=='GREAT':pri=tg['primaria'] or pri;inter=tg['intermedia'] or inter;nin=tg['ninos'] or nin
-if vista=='Ambos':cent=int(fa.ID_NOMBRE.nunique())
-cov=cent/nm*100 if nm else 0;m1,m2,m3,m4,m5,m6=st.columns(6);m1.metric('Instituciones MEP',f'{nm:,}');m2.metric('Centros abordados',f'{cent:,}');m3.metric('Primaria',f'{pri:,}');m4.metric('Intermedia',f'{inter:,}');m5.metric('Total niños',f'{nin:,}');m6.metric('Cobertura',f'{cov:.1f}%');st.markdown(f'<div class="resumen"><b>{vista}</b>: {cent:,} centros de {nm:,}; {nin:,} niños y {cov:.1f}% de cobertura.</div>',unsafe_allow_html=True)
-st.subheader('Mapa de seguimiento');st.caption('🟢 MPAS · 🔵 GREAT · 🟣 ambos programas · 🔴 sin actividad')
-if not fmmap.empty:
-    mapa=folium.Map([float(fmmap.LAT.mean()),float(fmmap.LON.mean())],zoom_start=8,tiles='CartoDB positron')
-    if estado in ['Todos','Sin actividad']:
-        for _,q in fmmap[fmmap.CENTROS_ACTIVOS==0].iterrows():folium.Marker([q.LAT,q.LON],icon=folium.Icon(color='red',icon='remove'),tooltip=f'{q.DISTRITO} · Sin actividad').add_to(mapa)
-    if estado in ['Todos','Con actividad']:
-        pins=fa.drop_duplicates(['PROGRAMA','ID_NOMBRE']).copy();both=act[act.ID_FILA_MEP.notna()].groupby('ID_NOMBRE').PROGRAMA.nunique();pins['AMBOS']=pins.ID_NOMBRE.map(both).fillna(1).gt(1);bc=[coord(normalizar(q.DISTRITO),normalizar(q.CANTON),normalizar(q.PROVINCIA)) for _,q in pins.iterrows()];pins['LB']=[x[0] for x in bc];pins['OB']=[x[1] for x in bc];pins['KEY']=pins.apply(lambda q:f'{q.LB:.6f}|{q.OB:.6f}',axis=1);num=1
-        for _,g in pins.groupby('KEY',sort=False):
-            g=g.reset_index(drop=True);n=len(g);la=float(g.at[0,'LB']);lo=float(g.at[0,'OB'])
-            for pos,q in g.iterrows():
-                lat,lon=(la,lo) if n==1 else (la+.009*math.cos(2*math.pi*pos/n),lo+.009*math.sin(2*math.pi*pos/n));color='#7e22ce' if q.AMBOS else '#16a34a' if q.PROGRAMA=='MPAS' else '#2563eb';html=f'<div style="width:31px;height:31px;border-radius:50%;background:{color};border:2px solid white;color:white;font-weight:800;text-align:center;line-height:27px">{num}</div>';pop=f'<b>{num}. {q.CENTRO_MEP}</b><br>Programa: {q.PROGRAMA}<br>Código MEP: {q.CODIGO_N}<br>{q.PROVINCIA} · {q.CANTON} · {q.DISTRITO}<br>Niños: {int(q.NINOS)}';folium.Marker([lat,lon],icon=folium.DivIcon(html=html,icon_size=(31,31),icon_anchor=(15,15)),tooltip=f'{num}. {q.CENTRO_MEP} · {q.PROGRAMA}',popup=folium.Popup(pop,max_width=340)).add_to(mapa);num+=1
-        st.caption(f'Pines visibles: {num-1:,}')
-    st_folium(mapa,use_container_width=True,height=600,returned_objects=[])
-st.subheader('Lista de centros abordados');lista=fa[['PROGRAMA','REGION_MEP','PROVINCIA','CANTON','DISTRITO','CENTRO_MEP','CODIGO_N','PRIMARIA','INTERMEDIA','NINOS']].rename(columns={'PROGRAMA':'Programa','REGION_MEP':'Región MEP','PROVINCIA':'Provincia','CANTON':'Cantón','DISTRITO':'Distrito','CENTRO_MEP':'Centro educativo','CODIGO_N':'Código MEP','PRIMARIA':'Primaria','INTERMEDIA':'Intermedia','NINOS':'Total niños'});st.dataframe(lista,use_container_width=True,hide_index=True,height=min(650,100+len(lista)*32));st.download_button('Descargar lista CSV',csv_bytes(lista),'centros_mpas_great.csv','text/csv')
-pend=pd.concat([mpas[mpas.ID_FILA_MEP.isna()],great[great.ID_FILA_MEP.isna()]],ignore_index=True)
+
+# ============================================================
+# CLASIFICACIÓN UNIFICADA MPAS / GREAT
+# ============================================================
+todos_registros = pd.concat([mpas, great], ignore_index=True)
+
+validos_programas = todos_registros[
+    todos_registros["ID_FILA_MEP"].notna()
+].copy()
+
+# Determina en cuáles programas aparece cada centro oficial.
+programas_por_centro = (
+    validos_programas.groupby("ID_NOMBRE")["PROGRAMA"]
+    .agg(lambda s: set(s.dropna().astype(str)))
+    .to_dict()
+)
+
+def clasificar_programas(programas):
+    programas = set(programas)
+    if {"MPAS", "GREAT"}.issubset(programas):
+        return "MPAS y GREAT"
+    if "MPAS" in programas:
+        return "Solo MPAS"
+    if "GREAT" in programas:
+        return "Solo GREAT"
+    return "Sin programa"
+
+clasificacion_por_centro = {
+    centro_id: clasificar_programas(programas)
+    for centro_id, programas in programas_por_centro.items()
+}
+
+validos_programas["CLASIFICACION"] = (
+    validos_programas["ID_NOMBRE"]
+    .map(clasificacion_por_centro)
+    .fillna("Sin programa")
+)
+
+st.subheader("Visualización de programas")
+
+vista_programa = st.radio(
+    "Seleccione los centros que desea mostrar",
+    [
+        "Todos",
+        "Solo MPAS",
+        "Solo GREAT",
+        "MPAS y GREAT en el mismo centro",
+    ],
+    horizontal=True,
+    help=(
+        "Todos: muestra verde, azul y morado. "
+        "Solo MPAS: únicamente centros exclusivos de MPAS. "
+        "Solo GREAT: únicamente centros exclusivos de GREAT. "
+        "MPAS y GREAT en el mismo centro: únicamente centros morados."
+    ),
+)
+
+if vista_programa == "Solo MPAS":
+    ids_seleccionados = {
+        centro_id
+        for centro_id, clase in clasificacion_por_centro.items()
+        if clase == "Solo MPAS"
+    }
+elif vista_programa == "Solo GREAT":
+    ids_seleccionados = {
+        centro_id
+        for centro_id, clase in clasificacion_por_centro.items()
+        if clase == "Solo GREAT"
+    }
+elif vista_programa == "MPAS y GREAT en el mismo centro":
+    ids_seleccionados = {
+        centro_id
+        for centro_id, clase in clasificacion_por_centro.items()
+        if clase == "MPAS y GREAT"
+    }
+else:
+    ids_seleccionados = set(clasificacion_por_centro.keys())
+
+# Registros de actividad correspondientes a los centros seleccionados.
+act = todos_registros[
+    todos_registros["ID_NOMBRE"].isin(ids_seleccionados)
+].copy()
+
+r = resumen(mep, act)
+
+# ============================================================
+# FILTROS TERRITORIALES
+# ============================================================
+st.subheader("Filtros territoriales")
+
+a, b, c, d = st.columns(4)
+
+reg = a.selectbox(
+    "Región MEP",
+    ["Todas"] + sorted(r["REGION_MEP"].dropna().unique().tolist()),
+)
+
+f = r.copy()
+if reg != "Todas":
+    f = f[f["REGION_MEP"].eq(reg)]
+
+pro = b.selectbox(
+    "Provincia",
+    ["Todas"] + sorted(f["PROVINCIA"].dropna().unique().tolist()),
+)
+if pro != "Todas":
+    f = f[f["PROVINCIA"].eq(pro)]
+
+can = c.selectbox(
+    "Cantón",
+    ["Todos"] + sorted(f["CANTON"].dropna().unique().tolist()),
+)
+if can != "Todos":
+    f = f[f["CANTON"].eq(can)]
+
+dis = d.selectbox(
+    "Distrito",
+    ["Todos"] + sorted(f["DISTRITO"].dropna().unique().tolist()),
+)
+if dis != "Todos":
+    f = f[f["DISTRITO"].eq(dis)]
+
+# Universo territorial completo para las métricas.
+f_territorial = f.copy()
+
+estado = st.radio(
+    "Estado de actividad en el distrito",
+    ["Todos", "Con actividad", "Sin actividad"],
+    horizontal=True,
+)
+
+f_mapa = f_territorial.copy()
+if estado == "Con actividad":
+    f_mapa = f_mapa[f_mapa["CENTROS_ACTIVOS"] > 0]
+elif estado == "Sin actividad":
+    f_mapa = f_mapa[f_mapa["CENTROS_ACTIVOS"] == 0]
+
+# Registros válidos de los programas seleccionados, filtrados territorialmente.
+fa = act[act["ID_FILA_MEP"].notna()].copy()
+
+if reg != "Todas":
+    fa = fa[fa["REGION_MEP"].eq(reg)]
+if pro != "Todas":
+    fa = fa[fa["PROVINCIA"].eq(pro)]
+if can != "Todos":
+    fa = fa[fa["CANTON"].eq(can)]
+if dis != "Todos":
+    fa = fa[fa["DISTRITO"].eq(dis)]
+
+# ============================================================
+# UNA FILA POR CENTRO PARA MÉTRICAS, MAPA Y LISTA
+# ============================================================
+if fa.empty:
+    centros_unificados = pd.DataFrame(columns=[
+        "ID_NOMBRE", "CLASIFICACION", "REGION_MEP", "PROVINCIA",
+        "CANTON", "DISTRITO", "CENTRO_MEP", "CODIGO_N",
+        "PRIMARIA", "INTERMEDIA", "NINOS", "PROGRAMAS"
+    ])
+else:
+    centros_unificados = (
+        fa.groupby("ID_NOMBRE", as_index=False)
+        .agg(
+            REGION_MEP=("REGION_MEP", "first"),
+            PROVINCIA=("PROVINCIA", "first"),
+            CANTON=("CANTON", "first"),
+            DISTRITO=("DISTRITO", "first"),
+            CENTRO_MEP=("CENTRO_MEP", "first"),
+            CODIGO_N=("CODIGO_N", "first"),
+            PRIMARIA=("PRIMARIA", "sum"),
+            INTERMEDIA=("INTERMEDIA", "sum"),
+            NINOS=("NINOS", "sum"),
+            PROGRAMAS=("PROGRAMA", lambda s: " + ".join(sorted(set(s.astype(str))))),
+        )
+    )
+    centros_unificados["CLASIFICACION"] = (
+        centros_unificados["ID_NOMBRE"]
+        .map(clasificacion_por_centro)
+        .fillna("Sin programa")
+    )
+
+nm = int(f_territorial["INSTITUCIONES_MEP"].sum())
+cent = int(len(centros_unificados))
+pri = int(centros_unificados["PRIMARIA"].sum()) if not centros_unificados.empty else 0
+inter = int(centros_unificados["INTERMEDIA"].sum()) if not centros_unificados.empty else 0
+nin = int(centros_unificados["NINOS"].sum()) if not centros_unificados.empty else 0
+cov = cent / nm * 100 if nm else 0
+
+conteo_mpas = int(
+    centros_unificados["CLASIFICACION"].isin(["Solo MPAS", "MPAS y GREAT"]).sum()
+) if not centros_unificados.empty else 0
+conteo_great = int(
+    centros_unificados["CLASIFICACION"].isin(["Solo GREAT", "MPAS y GREAT"]).sum()
+) if not centros_unificados.empty else 0
+conteo_ambos = int(
+    centros_unificados["CLASIFICACION"].eq("MPAS y GREAT").sum()
+) if not centros_unificados.empty else 0
+
+m1, m2, m3, m4, m5, m6 = st.columns(6)
+m1.metric("Instituciones MEP", f"{nm:,}")
+m2.metric("Centros visibles", f"{cent:,}")
+m3.metric("MPAS", f"{conteo_mpas:,}")
+m4.metric("GREAT", f"{conteo_great:,}")
+m5.metric("Ambos programas", f"{conteo_ambos:,}")
+m6.metric("Cobertura", f"{cov:.1f}%")
+
+st.markdown(
+    f"""
+    <div class="resumen">
+        <b>{vista_programa}</b>: se muestran <b>{cent:,} centros</b>
+        de un universo territorial de <b>{nm:,} instituciones MEP</b>.
+        La cobertura corresponde al <b>{cov:.1f}%</b> y los registros
+        visibles suman <b>{nin:,} niños reportados</b>.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ============================================================
+# MAPA
+# ============================================================
+st.subheader("Mapa de seguimiento")
+st.caption(
+    "🟢 Solo MPAS · 🔵 Solo GREAT · 🟣 MPAS y GREAT en el mismo centro · "
+    "🔴 Distrito sin actividad para la selección actual"
+)
+
+if f_mapa.empty:
+    st.warning("No existen datos para los filtros seleccionados.")
+else:
+    mapa = folium.Map(
+        [float(f_mapa["LAT"].mean()), float(f_mapa["LON"].mean())],
+        zoom_start=8,
+        tiles="CartoDB positron",
+    )
+
+    # Distritos sin actividad para la categoría seleccionada.
+    if estado in ["Todos", "Sin actividad"]:
+        for _, q in f_mapa[f_mapa["CENTROS_ACTIVOS"] == 0].iterrows():
+            folium.Marker(
+                [q["LAT"], q["LON"]],
+                icon=folium.Icon(color="red", icon="remove"),
+                tooltip=f"{q['DISTRITO']} · Sin actividad",
+                popup=folium.Popup(
+                    f"""
+                    <b>{q['DISTRITO']}</b><br>
+                    Sin actividad para: {vista_programa}<br>
+                    Región: {q['REGION_MEP']}<br>
+                    Provincia: {q['PROVINCIA']}<br>
+                    Cantón: {q['CANTON']}<br>
+                    Instituciones MEP: {int(q['INSTITUCIONES_MEP'])}
+                    """,
+                    max_width=330,
+                ),
+            ).add_to(mapa)
+
+    if estado in ["Todos", "Con actividad"] and not centros_unificados.empty:
+        pins = centros_unificados.copy()
+
+        coordenadas_base = [
+            coord(
+                normalizar(q["DISTRITO"]),
+                normalizar(q["CANTON"]),
+                normalizar(q["PROVINCIA"]),
+            )
+            for _, q in pins.iterrows()
+        ]
+        pins["LAT_BASE"] = [x[0] for x in coordenadas_base]
+        pins["LON_BASE"] = [x[1] for x in coordenadas_base]
+        pins["CLAVE_COORD"] = pins.apply(
+            lambda q: f"{q['LAT_BASE']:.6f}|{q['LON_BASE']:.6f}",
+            axis=1,
+        )
+
+        numero = 1
+
+        for _, grupo in pins.groupby("CLAVE_COORD", sort=False):
+            grupo = grupo.reset_index(drop=True)
+            cantidad = len(grupo)
+            lat_base = float(grupo.at[0, "LAT_BASE"])
+            lon_base = float(grupo.at[0, "LON_BASE"])
+
+            for posicion, q in grupo.iterrows():
+                if cantidad == 1:
+                    lat, lon = lat_base, lon_base
+                else:
+                    anillo = posicion // 8
+                    pos_anillo = posicion % 8
+                    elementos = min(8, cantidad - anillo * 8)
+                    angulo = 2 * math.pi * pos_anillo / max(elementos, 1)
+                    radio = 0.009 + anillo * 0.007
+                    lat = lat_base + radio * math.cos(angulo)
+                    lon = lon_base + radio * math.sin(angulo)
+
+                clase = q["CLASIFICACION"]
+
+                if clase == "MPAS y GREAT":
+                    color = "#7e22ce"
+                    etiqueta_programa = "MPAS y GREAT"
+                elif clase == "Solo MPAS":
+                    color = "#16a34a"
+                    etiqueta_programa = "Solo MPAS"
+                else:
+                    color = "#2563eb"
+                    etiqueta_programa = "Solo GREAT"
+
+                html = f"""
+                <div style="
+                    width:32px;height:32px;border-radius:50%;
+                    background:{color};border:2px solid white;
+                    color:white;font-weight:800;text-align:center;
+                    line-height:28px;box-shadow:0 2px 5px rgba(0,0,0,.35);
+                ">{numero}</div>
+                """
+
+                popup = f"""
+                <b>{numero}. {q['CENTRO_MEP']}</b><br>
+                Clasificación: {etiqueta_programa}<br>
+                Programas registrados: {q['PROGRAMAS']}<br>
+                Código MEP: {q['CODIGO_N']}<br>
+                Región: {q['REGION_MEP']}<br>
+                Provincia: {q['PROVINCIA']}<br>
+                Cantón: {q['CANTON']}<br>
+                Distrito: {q['DISTRITO']}<br>
+                Primaria: {int(q['PRIMARIA'])}<br>
+                Intermedia: {int(q['INTERMEDIA'])}<br>
+                Total niños reportados: {int(q['NINOS'])}
+                """
+
+                folium.Marker(
+                    [lat, lon],
+                    icon=folium.DivIcon(
+                        html=html,
+                        icon_size=(32, 32),
+                        icon_anchor=(16, 16),
+                    ),
+                    tooltip=f"{numero}. {q['CENTRO_MEP']} · {etiqueta_programa}",
+                    popup=folium.Popup(popup, max_width=350),
+                    z_index_offset=1000 + numero,
+                ).add_to(mapa)
+
+                numero += 1
+
+        st.caption(
+            f"Pines visibles: {numero - 1:,}. "
+            "Cada centro aparece una sola vez, aunque tenga ambos programas."
+        )
+
+    st_folium(
+        mapa,
+        use_container_width=True,
+        height=600,
+        returned_objects=[],
+    )
+
+# ============================================================
+# LISTA
+# ============================================================
+st.subheader("Lista de centros abordados")
+
+if estado == "Sin actividad":
+    st.info(
+        "La selección corresponde a distritos sin actividad; "
+        "por eso no hay centros abordados para listar."
+    )
+else:
+    lista = centros_unificados[[
+        "CLASIFICACION", "PROGRAMAS", "REGION_MEP", "PROVINCIA",
+        "CANTON", "DISTRITO", "CENTRO_MEP", "CODIGO_N",
+        "PRIMARIA", "INTERMEDIA", "NINOS"
+    ]].copy()
+
+    lista = lista.rename(columns={
+        "CLASIFICACION": "Clasificación",
+        "PROGRAMAS": "Programas registrados",
+        "REGION_MEP": "Región MEP",
+        "PROVINCIA": "Provincia",
+        "CANTON": "Cantón",
+        "DISTRITO": "Distrito",
+        "CENTRO_MEP": "Centro educativo",
+        "CODIGO_N": "Código MEP",
+        "PRIMARIA": "Primaria",
+        "INTERMEDIA": "Intermedia",
+        "NINOS": "Total niños",
+    })
+
+    st.dataframe(
+        lista,
+        use_container_width=True,
+        hide_index=True,
+        height=min(650, 100 + len(lista) * 32),
+    )
+
+    st.download_button(
+        "Descargar lista CSV",
+        csv_bytes(lista),
+        "centros_mpas_great_filtrados.csv",
+        "text/csv",
+    )
+
+# Registros que no pudieron relacionarse con MEP.
+pend = pd.concat(
+    [
+        mpas[mpas["ID_FILA_MEP"].isna()],
+        great[great["ID_FILA_MEP"].isna()],
+    ],
+    ignore_index=True,
+)
+
 if not pend.empty:
-    with st.expander(f'Registros pendientes de validar ({len(pend)})'):st.dataframe(pend[['PROGRAMA','CENTRO_ORIGEN','CODIGO_N','NINOS','COINCIDENCIA']],use_container_width=True,hide_index=True)
+    with st.expander(f"Registros pendientes de validar ({len(pend)})"):
+        st.dataframe(
+            pend[[
+                "PROGRAMA", "CENTRO_ORIGEN", "CODIGO_N",
+                "NINOS", "COINCIDENCIA"
+            ]],
+            use_container_width=True,
+            hide_index=True,
+        )
