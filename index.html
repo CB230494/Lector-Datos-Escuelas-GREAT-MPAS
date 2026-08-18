@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Seguimiento Preventivo 2026 | MPAS · GREAT</title>
+  <meta name="description" content="Lector territorial de centros educativos MEP, MPAS, GREAT y Policía Municipal." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+
+  <header class="topbar">
+    <div class="brand-wrap">
+      <div class="brand-mark">SS</div>
+      <div>
+        <div class="eyebrow">SEGUIMIENTO PREVENTIVO 2026</div>
+        <h1>Centros educativos · MPAS · GREAT</h1>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <span class="privacy-pill"><span class="pulse-dot"></span>Procesamiento local</span>
+      <button id="resetBtn" class="btn ghost" type="button">Reiniciar</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="hero panel reveal">
+      <div class="hero-copy">
+        <span class="section-kicker">LECTOR TERRITORIAL</span>
+        <h2>Impacto preventivo en centros educativos</h2>
+        <p>Integra el universo MEP con las intervenciones de MPAS, GREAT Fuerza Pública y Policía Municipal. Los archivos se procesan en tu navegador y no se envían a un servidor.</p>
+      </div>
+      <div class="program-legend">
+        <div class="legend-card mpas"><span></span><div><b>MPAS</b><small>Prevención y acompañamiento</small></div></div>
+        <div class="legend-card great"><span></span><div><b>GREAT</b><small>Fuerza Pública</small></div></div>
+        <div class="legend-card municipal"><span></span><div><b>Policía Municipal</b><small>Apoyo territorial GREAT</small></div></div>
+        <div class="legend-card both"><span></span><div><b>Coincidencia</b><small>Más de una fuente</small></div></div>
+      </div>
+    </section>
+
+    <section class="upload-grid reveal delay-1">
+      <article class="upload-card" data-kind="mep">
+        <div class="upload-head"><span class="file-icon">MEP</span><div><h3>Base MEP</h3><p>Universo de instituciones</p></div></div>
+        <label class="drop-zone" for="mepFile">
+          <input id="mepFile" type="file" accept=".xlsx,.xls" />
+          <span class="drop-title">Seleccionar Excel</span><span class="drop-sub">XLSX o XLS</span>
+        </label>
+        <div id="mepStatus" class="file-status empty">No cargado</div>
+      </article>
+
+      <article class="upload-card mpas-card" data-kind="mpas">
+        <div class="upload-head"><span class="file-icon mpas-bg">M</span><div><h3>Base MPAS</h3><p>Intervenciones MPAS</p></div></div>
+        <label class="drop-zone" for="mpasFile">
+          <input id="mpasFile" type="file" accept=".xlsx,.xls" />
+          <span class="drop-title">Seleccionar Excel</span><span class="drop-sub">XLSX o XLS</span>
+        </label>
+        <div id="mpasStatus" class="file-status empty">No cargado</div>
+      </article>
+
+      <article class="upload-card great-card" data-kind="great">
+        <div class="upload-head"><span class="file-icon great-bg">G</span><div><h3>Base GREAT</h3><p>GREAT + Policía Municipal</p></div></div>
+        <label class="drop-zone" for="greatFile">
+          <input id="greatFile" type="file" accept=".xlsx,.xls" />
+          <span class="drop-title">Seleccionar Excel</span><span class="drop-sub">XLSX o XLS</span>
+        </label>
+        <div id="greatStatus" class="file-status empty">No cargado</div>
+      </article>
+    </section>
+
+    <div class="action-row reveal delay-2">
+      <div id="loadHint" class="load-hint">Carga al menos un archivo para iniciar.</div>
+      <button id="processBtn" class="btn primary" type="button" disabled><span>Procesar información</span><i>→</i></button>
+    </div>
+
+    <section id="dashboard" class="dashboard hidden">
+      <section class="panel controls-panel reveal-live">
+        <div class="section-heading">
+          <div><span class="section-kicker">VISUALIZACIÓN</span><h2>Selecciona la información</h2></div>
+          <div id="loadedBadges" class="loaded-badges"></div>
+        </div>
+        <div id="viewPills" class="segmented"></div>
+      </section>
+
+      <section class="panel filters-panel reveal-live">
+        <div class="section-heading compact">
+          <div><span class="section-kicker">FILTROS</span><h2>Exploración territorial</h2></div>
+          <button id="clearFiltersBtn" class="link-btn" type="button">Limpiar filtros</button>
+        </div>
+        <div class="filters-grid">
+          <label><span>Región</span><select id="regionFilter"></select></label>
+          <label><span>Provincia</span><select id="provinceFilter"></select></label>
+          <label><span>Cantón</span><select id="cantonFilter"></select></label>
+          <label><span>Distrito</span><select id="districtFilter"></select></label>
+        </div>
+        <div class="activity-row">
+          <span>Estado de actividad</span>
+          <div id="activityPills" class="mini-segmented"></div>
+        </div>
+      </section>
+
+      <section id="metricGrid" class="metrics-grid reveal-live"></section>
+
+      <section class="panel narrative reveal-live">
+        <div class="narrative-icon">◎</div>
+        <div><span id="summaryTitle">Resumen</span><p id="summaryText"></p></div>
+      </section>
+
+      <section class="map-layout reveal-live">
+        <article class="panel map-panel">
+          <div class="section-heading compact">
+            <div><span class="section-kicker">MAPA</span><h2>Seguimiento georreferenciado</h2></div>
+            <span id="pinCount" class="count-badge">0 pines</span>
+          </div>
+          <div id="mapLegend" class="map-legend"></div>
+          <div id="map" aria-label="Mapa de centros educativos"></div>
+        </article>
+
+        <aside class="panel insight-panel">
+          <span class="section-kicker">LECTURA RÁPIDA</span>
+          <h3>Estado de la selección</h3>
+          <div id="insights" class="insights"></div>
+        </aside>
+      </section>
+
+      <section class="panel table-panel reveal-live">
+        <div class="section-heading compact">
+          <div><span class="section-kicker">DETALLE</span><h2 id="tableTitle">Centros abordados</h2></div>
+          <div class="table-actions"><span id="rowCount" class="count-badge">0 registros</span><button id="downloadBtn" class="btn secondary" type="button">Descargar CSV</button></div>
+        </div>
+        <div class="table-wrap"><table id="dataTable"><thead></thead><tbody></tbody></table></div>
+      </section>
+
+      <details id="pendingPanel" class="panel pending-panel hidden">
+        <summary><span>Registros pendientes de validar</span><strong id="pendingCount">0</strong></summary>
+        <div id="pendingBody" class="pending-body"></div>
+      </details>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status"></div>
+  <div id="loading" class="loading-overlay hidden"><div class="loader"></div><span>Procesando archivos…</span></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="app.js"></script>
+</body>
+</html>
